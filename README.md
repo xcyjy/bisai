@@ -1,0 +1,75 @@
+# AI 小说转剧本工具 — MVP
+
+- **后端**：Python + FastAPI，转换流水线（分章 → 人物抽取 → 逐场转换 → 校验 → YAML）
+- **前端**：Vue 3 + Vite，双栏编辑器（左原文 / 右可编辑剧本）+ YAML 导出
+- **LLM**：Claude（`claude-opus-4-8`，结构化输出）；**无 API Key 时自动降级为离线规则引擎**，demo 仍可跑通
+
+## 目录结构
+```
+bisai/
+├── backend/          # Python 后端
+│   ├── app/
+│   │   ├── schema.py     # 剧本 pydantic 模型 + 校验
+│   │   ├── chapters.py   # 分章
+│   │   ├── converter.py  # 核心转换（Claude + 离线规则）
+│   │   ├── pipeline.py   # 流水线装配
+│   │   ├── exporter.py   # YAML 导出
+│   │   └── main.py       # FastAPI 接口
+│   ├── cli.py        # 命令行端到端入口
+│   ├── requirements.txt
+│   └── .env.example
+├── frontend/         # Vue 3 + Vite 前端
+│   ├── src/{main.js, App.vue, api.js}
+│   ├── index.html
+│   └── package.json
+└── samples/sample_novel.txt   # 原创示例小说（3 章）
+```
+
+## 快速开始
+
+### 1. 后端
+```bash
+cd backend
+python -m venv .venv
+# Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # 可选：填入 ANTHROPIC_API_KEY 用 Claude；不填则离线规则引擎
+uvicorn app.main:app --reload --port 8000
+```
+
+### 2. 前端
+```bash
+cd frontend
+npm install
+npm run dev        # 打开 http://localhost:5173
+```
+
+### 3. 命令行（不开前端也能验证核心链路）
+```bash
+cd backend
+python cli.py ../samples/sample_novel.txt --title 旧城轨迹 -o out.yaml
+```
+
+## API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/health`  | 健康检查 + 当前引擎 |
+| POST | `/api/convert` | `{text,title,author}` → 剧本对象 + YAML + 统计 |
+| POST | `/api/export`  | `{screenplay}` → 编辑后重新生成 YAML + 校验 |
+
+## 引擎说明
+- 设置 `ANTHROPIC_API_KEY` → 使用 Claude 结构化输出，转换质量高（推荐演示）。
+- 未设置 / `FORCE_OFFLINE=true` → 离线规则引擎（按引号识别对白、心理词识别旁白、时间词切场），
+  质量有限但**零依赖跑通**，适合无网环境兜底。
+
+## Schema
+剧本 YAML Schema 与设计原因见上层文档 `../docs/02_YAML_Schema设计文档.md`。
+
+## MVP 已实现 / 待办
+- [x] 上传/粘贴 ≥3 章小说 → 结构化剧本
+- [x] 分章 / 切场 / 心理描写转旁白 / 对白归属
+- [x] 双栏在线编辑（场头、梗概、元素增删改）
+- [x] YAML 导出 + Schema 校验
+- [ ] 原文↔剧本高亮对照（加分项）
+- [ ] Fountain/PDF 导出（加分项）
+- [ ] 微短剧模式开关（加分项）
