@@ -71,9 +71,11 @@ export const fetchModels = () => request('/api/models', { auth: false })
 export async function streamAgents(payload, { onEvent, onResult, onError } = {}) {
   let resp
   try {
+    const headers = { 'Content-Type': 'application/json' }
+    if (getToken()) headers['Authorization'] = `Bearer ${getToken()}`
     resp = await fetch('/api/convert/agents', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     })
   } catch (e) {
