@@ -174,6 +174,8 @@ def list_projects(
             "author": p.author,
             "char_count": p.char_count,
             "scenes": len(sp.doc.get("scenes", [])) if sp else 0,
+            "episodes": len(sp.doc.get("episodes", [])) if sp else 0,
+            "script_type": (sp.doc.get("meta", {}).get("script_type", "film")) if sp else "",
             "status": st,
             "updated_at": p.updated_at.isoformat(),
         })

@@ -29,6 +29,10 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class UpdateProfileRequest(BaseModel):
+    nickname: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -43,6 +47,7 @@ def _user_public(u: User) -> dict:
         "plan": u.plan,
         "credits": u.credits,
         "plan_expires_at": u.plan_expires_at.isoformat() if u.plan_expires_at else None,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
     }
 
 
@@ -75,4 +80,21 @@ def login(req: LoginRequest, session: Session = Depends(get_session)):
 
 @router.get("/me")
 def me(current: User = Depends(get_current_user)):
+    return _user_public(current)
+
+
+@router.patch("/me")
+def update_me(
+    req: UpdateProfileRequest,
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """修改个人资料（当前支持昵称）。"""
+    nickname = (req.nickname or "").strip()
+    if not nickname:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "昵称不能为空")
+    current.nickname = nickname[:30]
+    session.add(current)
+    session.commit()
+    session.refresh(current)
     return _user_public(current)

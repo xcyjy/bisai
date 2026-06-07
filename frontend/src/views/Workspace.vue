@@ -145,7 +145,42 @@ function loadSample() {
   author.value = '改编自原创短篇'
 }
 
+// ---- 上传 .txt 文件（按钮选择 / 拖拽）----
+const fileInput = ref(null)
+const dragging = ref(false)
+
+function pickFile() { fileInput.value?.click() }
+
+function readFile(file) {
+  if (!file) return
+  const name = (file.name || '').toLowerCase()
+  const okType = name.endsWith('.txt') || file.type === 'text/plain' || file.type === ''
+  if (!okType) { errorMsg.value = '目前仅支持 .txt 纯文本文件'; return }
+  if (file.size > 5 * 1024 * 1024) { errorMsg.value = '文件过大（>5MB），请精简后再上传。'; return }
+  const reader = new FileReader()
+  reader.onload = () => {
+    novelText.value = String(reader.result || '')
+    if (!title.value || title.value === '未命名剧本') {
+      title.value = (file.name || '').replace(/\.txt$/i, '').trim() || '未命名剧本'
+    }
+    errorMsg.value = ''
+  }
+  reader.onerror = () => { errorMsg.value = '读取文件失败，请重试。' }
+  reader.readAsText(file, 'utf-8')
+}
+
+function onFileChange(e) {
+  readFile(e.target.files?.[0])
+  e.target.value = ''   // 允许重复选择同一文件
+}
+function onDrop(e) {
+  dragging.value = false
+  readFile(e.dataTransfer?.files?.[0])
+}
+
 const canUseAI = computed(() => auth.credits >= 1)
+const AGENT_COST = 2
+const canUseAgents = computed(() => auth.credits >= AGENT_COST)
 
 // ---- 超长文本：客户端按章节智能分段（≤单次上限），让用户清楚地分段转换 ----
 const SEG_MAX = 90000          // 单段上限（留余量，后端硬上限 10 万字）
@@ -517,8 +552,16 @@ async function copyYaml() {
         <input v-model="title" placeholder="剧本标题" />
         <input v-model="author" placeholder="编剧 / 改编者（可选）" />
       </div>
-      <textarea v-model="novelText"
-        placeholder="在此粘贴小说全文（建议至少 3 个章节，「第一章」等标题会自动识别）…" />
+      <div class="dropzone" :class="{ dragging }"
+           @dragover.prevent="dragging = true"
+           @dragleave.prevent="dragging = false"
+           @drop.prevent="onDrop">
+        <textarea v-model="novelText"
+          placeholder="在此粘贴小说全文，或把 .txt 文件拖到这里（建议至少 3 个章节，「第一章」等标题会自动识别）…" />
+        <div v-if="dragging" class="drop-overlay">📄 松开以载入 .txt 文件</div>
+      </div>
+      <input ref="fileInput" type="file" accept=".txt,text/plain"
+             style="display:none" @change="onFileChange" />
 
       <!-- 字数 / 章节 提示 -->
       <div class="text-meta">
@@ -558,14 +601,20 @@ async function copyYaml() {
             <router-link v-if="!canUseAI" to="/pricing" class="ep-up">积分不足，去升级 →</router-link>
           </div>
         </label>
-        <label class="ep-opt ep-wide" :class="{ on: engineChoice === 'agents' }">
-          <input type="radio" value="agents" v-model="engineChoice" />
+        <label class="ep-opt ep-wide" :class="{ on: engineChoice === 'agents', disabled: modelsAvailable && !canUseAgents }">
+          <input type="radio" value="agents" v-model="engineChoice" :disabled="modelsAvailable && !canUseAgents" />
           <div>
-            <div class="ep-title">⚡ 多 Agent 编排 <span class="ep-new">实时 · 并发 · 缓存</span></div>
-            <div class="ep-desc">多 Agent 并发转换，实时看活动流；命中缓存 0 token，附 token 账本</div>
+            <div class="ep-title">⚡ 多 Agent 编排 <span class="ep-flag">旗舰</span>
+              <span v-if="modelsAvailable" class="ep-cost">消耗 {{ AGENT_COST }} 积分（剩 {{ auth.credits }}）</span>
+              <span v-else class="ep-free">离线运行 · 免费</span>
+              <span class="ep-new">实时 · 并发 · 缓存</span>
+            </div>
+            <div class="ep-desc">多 Agent 并发转换 + Critic 自检改写，质量更高；实时看活动流、附 token 账本</div>
+            <router-link v-if="modelsAvailable && !canUseAgents" to="/pricing" class="ep-up">积分不足（需 {{ AGENT_COST }}），去升级 →</router-link>
           </div>
         </label>
       </div>
+      <p class="bill-rule">计费规则：✨ AI 精修每次成功转换扣 1 积分；⚡ 多 Agent 编排（旗舰）扣 {{ AGENT_COST }} 积分；失败不扣；快速版与离线模式免费、0 token。</p>
 
       <!-- 模型选择（多 Agent / AI 用）-->
       <div v-if="engineChoice === 'agents' && modelsAvailable" class="model-pick">
@@ -582,6 +631,7 @@ async function copyYaml() {
 
       <p v-if="errorMsg" class="error">{{ errorMsg }}</p>
       <div class="new-actions">
+        <button class="ghost" @click="pickFile">📄 上传 .txt</button>
         <button class="ghost" @click="loadSample">载入示例小说</button>
         <button class="primary" :disabled="loading" @click="doConvert">
           {{ loading ? '提交中…' : (needsSegment ? `转换第 ${selectedSeg + 1} 段 →` : '开始转换 →') }}
@@ -863,6 +913,16 @@ async function copyYaml() {
 .new-meta input { flex: 1; min-width: 160px; }
 .new-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 
+/* 文件拖拽区 */
+.dropzone { position: relative; border-radius: var(--r-sm); transition: box-shadow .15s; }
+.dropzone.dragging { box-shadow: 0 0 0 2px var(--brand); }
+.dropzone.dragging textarea { border-color: var(--brand); }
+.drop-overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--brand-soft); border: 2px dashed var(--brand); border-radius: var(--r-sm);
+  color: var(--brand); font-weight: 700; font-size: 15px; pointer-events: none;
+}
+
 /* 引擎选择 */
 .engine-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
 .ep-opt { display: flex; gap: 10px; align-items: flex-start; border: 1.5px solid var(--border-strong); border-radius: var(--r-sm); padding: 12px 14px; cursor: pointer; transition: border-color .15s, background .15s; }
@@ -874,6 +934,7 @@ async function copyYaml() {
 .ep-cost { color: var(--brand); font-size: 12px; font-weight: 600; margin-left: 4px; }
 .ep-desc { font-size: 12px; color: var(--text-2); margin-top: 3px; }
 .ep-up { display: inline-block; margin-top: 6px; font-size: 12px; color: var(--brand); font-weight: 600; }
+.bill-rule { margin: 10px 2px 0; font-size: 12px; color: var(--text-3); line-height: 1.6; }
 
 /* 字数提示 + 智能分段 */
 .text-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 12px; color: var(--text-2); }
@@ -889,6 +950,7 @@ async function copyYaml() {
 .seg-tip { margin: 8px 2px 0; font-size: 12px; color: var(--text-2); }
 .ep-wide { grid-column: 1 / -1; }
 .ep-new { color: var(--brand); font-size: 12px; font-weight: 600; margin-left: 4px; }
+.ep-flag { font-size: 11px; font-weight: 700; color: #fff; background: linear-gradient(90deg, var(--brand), #e0894f); padding: 1px 8px; border-radius: 999px; margin-left: 4px; }
 @media (max-width: 640px) { .engine-pick { grid-template-columns: 1fr; } }
 
 /* 模型下拉 */

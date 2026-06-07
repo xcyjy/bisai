@@ -49,6 +49,8 @@ export const register = (payload) =>
 export const login = (payload) =>
   request('/api/auth/login', { method: 'POST', body: payload, auth: false })
 export const fetchMe = () => request('/api/auth/me')
+export const updateProfile = (payload) =>
+  request('/api/auth/me', { method: 'PATCH', body: payload })
 
 // ---- 作品 ----
 export const listProjects = () => request('/api/projects')
@@ -129,6 +131,7 @@ export const createOrder = (sku) =>
   request('/api/orders', { method: 'POST', body: { sku } })
 export const payOrder = (orderId) =>
   request(`/api/orders/${orderId}/pay`, { method: 'POST', body: {} })
+export const listOrders = () => request('/api/orders')
 
 // ---- 其它 ----
 export async function health() {

@@ -22,6 +22,12 @@ const routes = [
     component: () => import('../views/Pricing.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/account',
+    name: 'account',
+    component: () => import('../views/Account.vue'),
+    meta: { requiresAuth: true },
+  },
 ]
 
 const router = createRouter({

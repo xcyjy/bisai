@@ -136,6 +136,14 @@ const typeLabel = { action: '动作', voiceover: '画外音', dialogue: '对白'
 
 /* ---- 主视觉 ---- */
 .hero { position: relative; z-index: 1; display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; padding: 48px 0 36px; }
+.hero-left {
+  background: rgba(255,255,255,.55);
+  backdrop-filter: saturate(1.2) blur(6px);
+  border: 1px solid rgba(234,221,194,.75);
+  border-radius: 22px;
+  padding: 40px 44px;
+  box-shadow: 0 12px 32px rgba(120,80,30,.08);
+}
 .badge { display: inline-block; background: rgba(192,97,47,.12); color: #c0612f; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; animation: fadeUp .6s both; }
 .hero h1 { font-size: 44px; line-height: 1.25; margin: 16px 0; animation: fadeUp .6s .05s both; }
 .rotator { display: inline-block; }
@@ -190,6 +198,7 @@ const typeLabel = { action: '动作', voiceover: '画外音', dialogue: '对白'
 
 @media (max-width: 900px) {
   .hero { grid-template-columns: 1fr; } .hero h1 { font-size: 34px; }
+  .hero-left { padding: 28px 24px; }
   .steps,.features { grid-template-columns: 1fr 1fr; }
 }
 </style>

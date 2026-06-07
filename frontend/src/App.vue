@@ -1,14 +1,36 @@
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth.js'
 
 const auth = useAuthStore()
 const router = useRouter()
 
-onMounted(() => auth.loadMe())
+const menuOpen = ref(false)
+const menuRef = ref(null)
+
+const displayName = computed(() => auth.user?.nickname || auth.user?.email || '创作者')
+const initial = computed(() => displayName.value.trim().charAt(0).toUpperCase())
+
+function onClickOutside(e) {
+  if (menuOpen.value && menuRef.value && !menuRef.value.contains(e.target)) {
+    menuOpen.value = false
+  }
+}
+
+onMounted(() => {
+  auth.loadMe()
+  document.addEventListener('click', onClickOutside)
+})
+onUnmounted(() => document.removeEventListener('click', onClickOutside))
+
+function go(name) {
+  menuOpen.value = false
+  router.push({ name })
+}
 
 function logout() {
+  menuOpen.value = false
   auth.logout()
   router.push({ name: 'login' })
 }
@@ -24,9 +46,22 @@ function logout() {
           <router-link to="/workspace">+ 新建</router-link>
           <span class="divider"></span>
           <router-link to="/pricing" class="credits" title="剩余 AI 精修次数">⚡ {{ auth.credits }}</router-link>
-          <span class="user">{{ auth.user?.nickname || auth.user?.email }}</span>
-          <span class="plan" :class="{ pro: auth.isMember }">{{ auth.isMember ? 'PRO' : 'FREE' }}</span>
-          <button class="btn ghost small" @click="logout">退出</button>
+          <div class="usermenu" ref="menuRef">
+            <button class="user-btn" :class="{ open: menuOpen }" @click="menuOpen = !menuOpen">
+              <span class="avatar">{{ initial }}</span>
+              <span class="uname">{{ displayName }}</span>
+              <span class="plan" :class="{ pro: auth.isMember }">{{ auth.isMember ? 'PRO' : 'FREE' }}</span>
+              <span class="caret">▾</span>
+            </button>
+            <transition name="dd">
+              <div v-if="menuOpen" class="dropdown">
+                <a @click="go('account')">👤 我的信息</a>
+                <a @click="go('pricing')">💳 升级会员</a>
+                <div class="dd-divider"></div>
+                <a class="danger" @click="logout">⏻ 退出登录</a>
+              </div>
+            </transition>
+          </div>
         </nav>
         <nav v-else class="nav">
           <button class="btn primary small" @click="router.push({ name: 'login' })">登录 / 注册</button>
@@ -98,6 +133,37 @@ body {
 .nav .plan.pro { color: #fff; background: linear-gradient(90deg, var(--brand), #e0894f); border-color: transparent; font-weight: 700; }
 .nav .credits { color: var(--brand); background: var(--brand-soft); padding: 3px 10px; border-radius: 999px; font-weight: 700; font-size: 13px; text-decoration: none; }
 .nav .credits:hover { background: var(--brand); color: #fff; }
+
+/* ---- 用户菜单（头像 + 下拉） ---- */
+.usermenu { position: relative; }
+.user-btn {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 4px 10px 4px 4px; font-family: inherit; transition: border-color .15s, box-shadow .15s;
+}
+.user-btn:hover, .user-btn.open { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.user-btn .avatar {
+  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--brand), #e0894f); color: #fff;
+  font-weight: 800; font-size: 14px;
+}
+.user-btn .uname { font-weight: 600; color: var(--text); font-size: 14px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-btn .caret { color: var(--text-3); font-size: 11px; }
+.dropdown {
+  position: absolute; right: 0; top: calc(100% + 8px); min-width: 168px; z-index: 60;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
+  box-shadow: var(--shadow-lg); padding: 6px;
+}
+.dropdown a {
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: var(--r-sm);
+  font-size: 14px; color: var(--text-2); cursor: pointer; text-decoration: none;
+}
+.dropdown a:hover { background: var(--brand-soft); color: var(--brand); }
+.dropdown a.danger:hover { background: #fcf0ef; color: var(--bad); }
+.dd-divider { height: 1px; background: var(--border); margin: 6px 4px; }
+.dd-enter-active, .dd-leave-active { transition: opacity .14s, transform .14s; }
+.dd-enter-from, .dd-leave-to { opacity: 0; transform: translateY(-6px); }
 
 /* ---- 按钮 ---- */
 .btn, button.primary, button.ghost {
