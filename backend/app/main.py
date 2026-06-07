@@ -22,7 +22,10 @@ try:
 except ImportError:
     pass
 
+from .api import account as account_api  # noqa: E402
 from .api import auth as auth_api  # noqa: E402
+from .api import jobs as jobs_api  # noqa: E402
+from .api import orders as orders_api  # noqa: E402
 from .api import projects as projects_api  # noqa: E402
 from .converter import engine_mode  # noqa: E402
 from .core.config import settings  # noqa: E402
@@ -49,6 +52,9 @@ def _startup():
 
 app.include_router(auth_api.router)
 app.include_router(projects_api.router)
+app.include_router(jobs_api.router)
+app.include_router(orders_api.router)
+app.include_router(account_api.router)
 
 
 class ConvertRequest(BaseModel):

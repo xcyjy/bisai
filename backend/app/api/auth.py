@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 from sqlmodel import Session, select
 
+from ..core.config import settings
 from ..core.deps import get_current_user
 from ..core.security import create_access_token, hash_password, verify_password
 from ..db.models import User
@@ -35,7 +36,14 @@ class TokenResponse(BaseModel):
 
 
 def _user_public(u: User) -> dict:
-    return {"id": u.id, "email": u.email, "nickname": u.nickname, "plan": u.plan}
+    return {
+        "id": u.id,
+        "email": u.email,
+        "nickname": u.nickname,
+        "plan": u.plan,
+        "credits": u.credits,
+        "plan_expires_at": u.plan_expires_at.isoformat() if u.plan_expires_at else None,
+    }
 
 
 @router.post("/register", response_model=TokenResponse)
@@ -49,6 +57,7 @@ def register(req: RegisterRequest, session: Session = Depends(get_session)):
         email=req.email,
         password_hash=hash_password(req.password),
         nickname=req.nickname or req.email.split("@")[0],
+        credits=settings.free_signup_credits,  # 注册赠送积分
     )
     session.add(user)
     session.commit()

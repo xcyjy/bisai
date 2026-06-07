@@ -32,7 +32,7 @@ onUnmounted(() => { clearInterval(timer); clearInterval(demoTimer) })
 function go() {
   router.push(auth.isLoggedIn ? { name: 'works' } : { name: 'login' })
 }
-const typeLabel = { action: '动作', voiceover: '旁白', dialogue: '对白' }
+const typeLabel = { action: '动作', voiceover: '画外音', dialogue: '对白' }
 </script>
 
 <template>

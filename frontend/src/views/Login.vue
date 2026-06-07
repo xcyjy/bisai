@@ -108,8 +108,8 @@ function switchMode(m) {
 </template>
 
 <style scoped>
-.hint { font-size: 12px; color: #99876a; margin: 4px 0 2px; }
-.hint.bad-text, .bad-text { color: #b00020; }
-.hint.ok-text, .ok-text { color: #2e7d32; }
-.auth-wrap input.bad { border-color: #b00020; }
+.hint { font-size: 12px; color: var(--text-3); margin: 4px 0 2px; }
+.hint.bad-text, .bad-text { color: var(--bad); }
+.hint.ok-text, .ok-text { color: var(--ok); }
+.auth-wrap input.bad { border-color: var(--bad); }
 </style>

@@ -25,7 +25,9 @@ class User(SQLModel, table=True):
     email: str = Field(index=True, unique=True)
     password_hash: str
     nickname: str = ""
-    plan: str = Field(default="free")  # free | pro | admin
+    plan: str = Field(default="free")  # free | pro
+    plan_expires_at: Optional[datetime] = None  # 会员到期时间（None=非会员）
+    credits: int = Field(default=0)  # 积分余额：1 次 AI 转换扣 1 分
     created_at: datetime = Field(default_factory=_now)
 
 
@@ -55,3 +57,51 @@ class Screenplay(SQLModel, table=True):
     engine: str = ""
     is_valid: bool = True
     created_at: datetime = Field(default_factory=_now)
+
+
+class Job(SQLModel, table=True):
+    """异步转换任务：一部小说的转换可能调用多次大模型，耗时较长，走后台任务。"""
+    __tablename__ = "jobs"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    project_id: int = Field(foreign_key="projects.id", index=True)
+    engine: str = ""            # 期望引擎：offline | ai
+    status: str = "queued"      # queued | running | done | failed
+    progress: int = 0           # 已完成章节数
+    total: int = 0              # 总章节数
+    error: str = ""
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class UsageLog(SQLModel, table=True):
+    """每次转换的用量与成本（内部计费/审计用）。"""
+    __tablename__ = "usage_logs"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    project_id: Optional[int] = Field(default=None, foreign_key="projects.id")
+    engine: str = ""
+    in_tokens: int = 0
+    out_tokens: int = 0
+    cost_usd: float = 0.0
+    credits_spent: int = 0
+    created_at: datetime = Field(default_factory=_now)
+
+
+class Order(SQLModel, table=True):
+    """订单：购买会员或积分包。本地用 mock 支付，云上可接微信/支付宝回调。"""
+    __tablename__ = "orders"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    sku: str = ""               # 套餐/积分包代码，见 core/plans.py
+    title: str = ""             # 下单时的商品名快照
+    amount_cny: float = 0.0     # 金额（元）
+    grant_plan: str = ""        # 购买会员时授予的 plan
+    grant_days: int = 0         # 会员天数
+    grant_credits: int = 0      # 赠送/购买的积分
+    status: str = "pending"     # pending | paid | failed
+    created_at: datetime = Field(default_factory=_now)
+    paid_at: Optional[datetime] = None
