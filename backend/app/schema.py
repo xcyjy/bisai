@@ -58,6 +58,21 @@ class SceneList(BaseModel):
     scenes: List[Scene]
 
 
+class Episode(BaseModel):
+    """短剧的一集（由若干连续场打包而成）。
+
+    短剧是本工具的核心产物：剧本转换完成后按口播时长贪心拆集，
+    每集必须自带开场钩子（hook）与集尾扣子（cliffhanger）。
+    """
+    episode_number: int = Field(description="集号，从 1 递增")
+    title: str = Field(description="本集标题（取自首场梗概）")
+    scene_numbers: List[int] = Field(description="本集包含的场号（引用 scenes）")
+    hook: str = Field(default="", description="开场钩子：前几秒抓人的台词/梗概")
+    cliffhanger: str = Field(default="", description="集尾扣子：逼着观众看下一集的悬念")
+    est_seconds: int = Field(default=0, description="预估时长（秒），按口播字数估算")
+    duration_text: str = Field(default="", description="时长的可读文本，如 2分30秒")
+
+
 # ---- 最终装配 / 校验 ----
 
 VALID_ELEMENT_TYPES = {"action", "dialogue", "voiceover", "transition"}
@@ -96,4 +111,29 @@ def validate_screenplay(doc: dict) -> List[str]:
                     problems.append(f"第 {no} 场的 {t} 缺少说话人")
                 elif known_names and ch not in known_names:
                     problems.append(f"第 {no} 场说话人“{ch}”不在人物表中")
+
+    # ---- 分集校验（短剧核心结构；仅在已拆集时执行）----
+    # 这里只校验「结构完整性」——集号连续、场被完整且不重复地收录。
+    # 钩子/扣子/时长是否达标属于内容健康度，由 episodes.py 以 warnings 形式给出，
+    # 不在此判为硬错误（避免一集恰好收在动作镜头时被误判为无效）。
+    episodes = doc.get("episodes", [])
+    if episodes:
+        all_scene_nos = [s.get("scene_number") for s in scenes]
+        covered: List[int] = []
+        exp_ep = 1
+        for ep in episodes:
+            en = ep.get("episode_number")
+            if en != exp_ep:
+                problems.append(f"集号不连续：期望 {exp_ep}，实际 {en}")
+            exp_ep += 1
+            sns = ep.get("scene_numbers") or []
+            if not sns:
+                problems.append(f"第 {en} 集没有任何场")
+            covered.extend(sns)
+        # 覆盖完整性：每个场恰好属于一集
+        missing = [n for n in all_scene_nos if n not in covered]
+        if missing:
+            problems.append(f"以下场未被任何集收录：{missing}")
+        if len(covered) != len(set(covered)):
+            problems.append("存在被多集重复收录的场")
     return problems

@@ -7,7 +7,7 @@ const router = useRouter()
 const auth = useAuthStore()
 
 // 轮播标语
-const words = ['影视剧本', '微短剧', '分镜脚本', '舞台剧本']
+const words = ['爆款短剧', '竖屏微短剧', '分集脚本', '可拍剧本']
 const wordIdx = ref(0)
 let timer = null
 
@@ -57,7 +57,7 @@ const typeLabel = { action: '动作', voiceover: '画外音', dialogue: '对白'
         </h1>
         <p class="sub">
           粘贴小说原文，AI 自动分章、切场、识别对白与心理独白，
-          产出规范的结构化剧本，还能在线编辑、一键导出。
+          一键拆成带钩子/扣子的分集短剧，还能在线编辑、导出标准 YAML。
         </p>
         <div class="cta">
           <button class="primary big" @click="go">
@@ -107,7 +107,7 @@ const typeLabel = { action: '动作', voiceover: '画外音', dialogue: '对白'
 
     <!-- 特性卡片 -->
     <section class="features">
-      <div class="feat" style="--d:0s"><div class="ic">🎬</div><h3>专业剧本范式</h3><p>场头 INT/EXT、对白、旁白、动作、转场，遵循行业格式。</p></div>
+      <div class="feat" style="--d:0s"><div class="ic">🎬</div><h3>短剧分集产线</h3><p>自动拆集，每集带开场钩子、集尾扣子与时长体检，贴合竖屏短剧节奏。</p></div>
       <div class="feat" style="--d:.1s"><div class="ic">🧠</div><h3>会"看懂"心理戏</h3><p>"他没想到…"等心理描写自动转为画外音，Show don't tell。</p></div>
       <div class="feat" style="--d:.2s"><div class="ic">✏️</div><h3>双栏在线编辑</h3><p>左原文右剧本，逐场逐句可改，所见即所得。</p></div>
       <div class="feat" style="--d:.3s"><div class="ic">⚡</div><h3>双引擎兜底</h3><p>有网用 Claude 高质量，无网自动降级离线规则，永远跑得通。</p></div>
@@ -115,7 +115,7 @@ const typeLabel = { action: '动作', voiceover: '画外音', dialogue: '对白'
 
     <!-- 底部召唤 -->
     <section class="bottom-cta">
-      <h2>把抽屉里的小说，变成能拍的剧本</h2>
+      <h2>把抽屉里的小说，变成能拍的爆款短剧</h2>
       <button class="primary big" @click="go">
         {{ auth.isLoggedIn ? '进入我的作品 →' : '立即免费创作 →' }}
       </button>

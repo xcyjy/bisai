@@ -8,6 +8,7 @@ python-dotenv>=1.0
 pydantic-settings>=2.1
 sqlmodel>=0.0.16
 passlib[bcrypt]>=1.7
+bcrypt<4.1  # 锁定：passlib 1.7.x 不兼容 bcrypt>=4.1（会报 __about__ / 72字节自检错误）
 python-jose[cryptography]>=3.3
 email-validator>=2.0
 # PostgreSQL 驱动（本地用 SQLite 时可不装；部署到云时启用）

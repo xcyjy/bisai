@@ -37,7 +37,8 @@ def main() -> int:
     print("=" * 50, file=sys.stderr)
     print(f"引擎: {stats['engine']}", file=sys.stderr)
     print(f"章节: {stats['chapters']}  人物: {stats['characters']}  "
-          f"场次: {stats['scenes']}  对白: {stats['dialogues']}  旁白: {stats['voiceovers']}",
+          f"场次: {stats['scenes']}  分集: {stats.get('episodes', 0)}  "
+          f"对白: {stats['dialogues']}  旁白: {stats['voiceovers']}",
           file=sys.stderr)
     print(f"校验通过: {stats['valid']}", file=sys.stderr)
     for p in stats["problems"]:

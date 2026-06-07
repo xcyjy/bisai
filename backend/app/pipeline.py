@@ -1,6 +1,8 @@
-"""转换流水线：把整篇小说装配成完整剧本 dict。
+"""转换流水线：把整篇小说装配成完整短剧剧本 dict。
 
-流程：分章 -> 全局人物抽取 -> 逐章转换 -> 装配 + 编号 -> 校验。
+流程：分章 -> 全局人物抽取 -> 逐章转换 -> 装配 + 编号 -> 拆集 -> 校验。
+本工具定位为「小说 → 短剧」：转换完成后默认按口播时长自动拆集，
+每集自带钩子/扣子/时长，产出的 YAML 本身就是分集短剧结构。
 支持 use_ai（AI 精修 vs 离线规则）与 progress 回调（用于异步任务进度）。
 """
 from __future__ import annotations
@@ -9,6 +11,7 @@ from typing import Callable, Optional
 
 from .chapters import split_chapters
 from .converter import convert_chapter, engine_mode, extract_characters
+from .episodes import split_into_episodes
 from .schema import validate_screenplay
 
 ProgressCb = Optional[Callable[[int, int], None]]
@@ -21,10 +24,12 @@ def convert_novel(
     author: str = "",
     use_ai: bool = False,
     progress: ProgressCb = None,
+    target_minutes: float = 2.5,
 ) -> dict:
-    """返回完整剧本 dict（含 meta / characters / scenes）+ 统计 + 校验结果。
+    """返回完整短剧剧本 dict（含 meta / characters / scenes / episodes）+ 统计 + 校验结果。
 
     progress(done, total)：每完成一章回调一次，便于异步任务上报进度。
+    target_minutes：单集目标时长（分钟），用于自动拆集。
     stats 中含 token 用量（in_tokens/out_tokens），离线时为 0。
     """
     chapters = split_chapters(text)
@@ -61,7 +66,7 @@ def convert_novel(
             "title": title,
             "original_work": original_work,
             "author": author,
-            "script_type": "film",
+            "script_type": "short_drama",
             "language": "zh",
             "source_chapters": chapter_titles,
             "generated_by": "ai-draft",
@@ -73,12 +78,16 @@ def convert_novel(
         "scenes": scenes_out,
     }
 
+    # 4) 自动拆集：短剧定位下，转换即产出分集结构（每集带钩子/扣子/时长）
+    doc["episodes"] = split_into_episodes(doc, target_minutes=target_minutes)
+
     problems = validate_screenplay(doc)
     stats = {
         "engine": engine_mode(use_ai),
         "chapters": len(chapters),
         "characters": len(characters),
         "scenes": len(scenes_out),
+        "episodes": len(doc["episodes"]),
         "dialogues": sum(
             1 for s in scenes_out for el in s["elements"] if el["type"] == "dialogue"
         ),

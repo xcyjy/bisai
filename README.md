@@ -1,7 +1,9 @@
-# AI 小说转剧本工具 — MVP
+# AI 小说转**短剧**工具 — MVP
 
-- **后端**：Python + FastAPI，转换流水线（分章 → 人物抽取 → 逐场转换 → 校验 → YAML）
-- **前端**：Vue 3 + Vite，双栏编辑器（左原文 / 右可编辑剧本）+ YAML 导出
+> 定位：**小说 → 竖屏微短剧（short_drama）**。不止把小说排成剧本，更把短剧行业铁律（2~3 分钟一集、开场钩子、集尾扣子、强冲突快节奏）算法化为可计算的分集产线。
+
+- **后端**：Python + FastAPI，转换流水线（分章 → 人物抽取 → 逐场转换 → **自动拆集** → 校验 → YAML）
+- **前端**：Vue 3 + Vite，双栏编辑器（左原文 / 右可编辑剧本）+ 分集体检 + YAML 导出
 - **LLM**：Claude（`claude-opus-4-8`，结构化输出）；**无 API Key 时自动降级为离线规则引擎**，demo 仍可跑通
 
 ## 目录结构
@@ -12,7 +14,8 @@ bisai/
 │   │   ├── schema.py     # 剧本 pydantic 模型 + 校验
 │   │   ├── chapters.py   # 分章
 │   │   ├── converter.py  # 核心转换（Claude + 离线规则）
-│   │   ├── pipeline.py   # 流水线装配
+│   │   ├── episodes.py   # 短剧拆集（钩子/扣子/时长/体检）
+│   │   ├── pipeline.py   # 流水线装配（转换 → 自动拆集）
 │   │   ├── exporter.py   # YAML 导出
 │   │   └── main.py       # FastAPI 接口
 │   ├── cli.py        # 命令行端到端入口
@@ -68,8 +71,9 @@ python cli.py ../samples/sample_novel.txt --title 旧城轨迹 -o out.yaml
 ## MVP 已实现 / 待办
 - [x] 上传/粘贴 ≥3 章小说 → 结构化剧本
 - [x] 分章 / 切场 / 心理描写转旁白 / 对白归属
+- [x] **短剧自动拆集**：按口播时长成集，每集带钩子/扣子/时长 + 产能体检
 - [x] 双栏在线编辑（场头、梗概、元素增删改）
-- [x] YAML 导出 + Schema 校验
+- [x] YAML 导出（含 episodes 分集结构）+ Schema 校验
 - [ ] 原文↔剧本高亮对照（加分项）
 - [ ] Fountain/PDF 导出（加分项）
-- [ ] 微短剧模式开关（加分项）
+- [ ] 分集时间轴可视化 / 拖拽调整分集边界（加分项）
