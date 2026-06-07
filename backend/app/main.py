@@ -90,6 +90,8 @@ def convert(req: ConvertRequest):
     """匿名试用：转换但不保存。登录后保存请用 POST /api/projects。"""
     if not req.text or len(req.text.strip()) < 50:
         raise HTTPException(status_code=400, detail="小说文本太短，请提供至少 3 个章节的内容。")
+    if len(req.text) > 100_000:
+        raise HTTPException(status_code=400, detail="小说文本过长（>10万字），请分批转换。")
     result = convert_novel(
         text=req.text,
         title=req.title,
@@ -192,17 +194,20 @@ async def convert_agents(
             text, title=req.title, author=req.author,
             use_ai=use_ai, model=req.model, emit=queue.put_nowait,
         ))
-        # 流式吐出 Agent 事件，直到编排任务结束
+        def _fmt(e: dict) -> str:
+            ev = "partial" if e.get("partial") else "agent"
+            return f"event: {ev}\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
+
+        # 流式吐出 Agent 事件 + 渐进式 partial（边转边出），直到编排任务结束
         while True:
             try:
                 e = await asyncio.wait_for(queue.get(), timeout=0.3)
-                yield f"event: agent\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
+                yield _fmt(e)
             except asyncio.TimeoutError:
                 if task.done():
                     break
         while not queue.empty():
-            e = queue.get_nowait()
-            yield f"event: agent\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
+            yield _fmt(queue.get_nowait())
         try:
             result = await task
             stats = result["stats"]

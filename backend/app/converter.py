@@ -26,7 +26,7 @@ def _model() -> str:
     return settings.script_model
 
 # ---- 转换铁律（注入到 Prompt，也是离线规则的设计依据）----
-RULES = """你是一位专业编剧，正在把小说改编成剧本初稿。严格遵守以下铁律：
+RULES = """你是一位专业编剧，正在把小说改编成影视剧本初稿。严格遵守以下铁律：
 1. Show, don't tell：剧本只能呈现“看得见的动作 + 听得到的声音”。
 2. 心理描写（他想/他明白/他没想到/内心独白）→ 转成 voiceover（画外音），归到对应角色，绝不能当作 action。
 3. 对白 → dialogue，必须标明 character（说话人）；“怎么说”的提示放进 parenthetical。
@@ -69,6 +69,81 @@ _TIME_CUES = ["第二天", "次日", "傍晚", "黄昏", "清晨", "夜里", "�
               "几天后", "一周后", "与此同时", "另一边", "回到", "三天后", "多年后", "片刻后"]
 # 引号
 _QUOTE_RE = re.compile(r"[“\"「](.+?)[”\"」]")
+
+
+# ---- 长文本切分 + 人物合并（在线/离线、pipeline/orchestrator 共用）----
+CHAR_WINDOW = 20000        # 人物抽取的滑窗大小（字符）
+CHAR_OVERLAP = 1000        # 窗口重叠，避免跨窗角色漏抽
+MAX_CHAR_WINDOWS = 8       # 超长文本最多采样这么多窗口，控成本
+MAX_CHAPTER_CHARS = 7000   # 单章超过此长度则再切块，防 LLM 输出被 max_tokens 截断
+MAX_CHARACTERS = 30        # 全局人物表上限
+
+
+def text_windows(text: str, size: int = CHAR_WINDOW, overlap: int = CHAR_OVERLAP,
+                 max_windows: int = MAX_CHAR_WINDOWS) -> List[str]:
+    """把长文本切成有重叠的滑窗；窗口过多时均匀采样（保证首尾都覆盖）。"""
+    if len(text) <= size:
+        return [text]
+    step = max(1, size - overlap)
+    wins = [text[i:i + size] for i in range(0, len(text), step)]
+    if len(wins) > max_windows:
+        idx = sorted({round(k * (len(wins) - 1) / (max_windows - 1)) for k in range(max_windows)})
+        wins = [wins[i] for i in idx]
+    return wins
+
+
+def chunk_by_paragraph(body: str, max_chars: int = MAX_CHAPTER_CHARS) -> List[str]:
+    """按段落把超长章节切成 ≤max_chars 的块，避免单次转换输出被截断。"""
+    if len(body) <= max_chars:
+        return [body]
+    chunks: List[str] = []
+    cur = ""
+    for para in paragraphs(body):
+        if cur and len(cur) + len(para) > max_chars:
+            chunks.append(cur)
+            cur = para
+        else:
+            cur = f"{cur}\n{para}" if cur else para
+    if cur:
+        chunks.append(cur)
+    return chunks or [body]
+
+
+def merge_characters(groups: List[List[Character]], cap: int = MAX_CHARACTERS) -> List[Character]:
+    """把多个窗口抽到的人物合并去重：同名归一、别名取并集、缺失字段互补、重新编号。"""
+    by_name: dict = {}
+    order: List[str] = []
+    alias_to_canon: dict = {}
+    for chars in groups:
+        for c in chars or []:
+            name = (c.name or "").strip()
+            if not name:
+                continue
+            canon = alias_to_canon.get(name, name)
+            if canon not in by_name:
+                clone = c.model_copy(deep=True)
+                clone.name = canon
+                by_name[canon] = clone
+                order.append(canon)
+            ex = by_name[canon]
+            aliases = (set(ex.aliases or []) | set(c.aliases or [])) - {canon}
+            ex.aliases = sorted(a for a in aliases if a)
+            for a in ex.aliases:
+                alias_to_canon.setdefault(a, canon)
+            if not ex.description and c.description:
+                ex.description = c.description
+            if not ex.role and c.role:
+                ex.role = c.role
+            if not ex.gender and c.gender:
+                ex.gender = c.gender
+            if not ex.arc and c.arc:
+                ex.arc = c.arc
+    out: List[Character] = []
+    for i, name in enumerate(order[:cap], start=1):
+        ch = by_name[name]
+        ch.id = f"char_{i:02d}"
+        out.append(ch)
+    return out
 
 
 def _is_offline(use_ai: bool) -> bool:
@@ -129,21 +204,26 @@ def _structured(client, system: str, prompt: str, output_model, max_tokens: int,
 
 
 def _extract_characters_online(full_text: str, usage: Optional[dict] = None) -> List[Character]:
+    """全篇分窗抽取人物再合并去重——长篇里后段才出场的角色也不会漏。"""
     client = _client()
-    prompt = (
-        "下面是一篇小说。请抽取主要人物，生成全局人物表。"
-        "为每个角色分配唯一 id（如 char_01），给出 name 和一句话 description。\n\n"
-        f"小说全文：\n{full_text[:12000]}"
-    )
-    out = _structured(
-        client,
-        system="你是专业编剧助手，擅长从小说中梳理人物。",
-        prompt=prompt,
-        output_model=CharacterList,
-        max_tokens=4000,
-        usage=usage,
-    )
-    return out.characters if out else []
+    groups: List[List[Character]] = []
+    for win in text_windows(full_text):
+        prompt = (
+            "下面是一篇小说的片段。请抽取其中出现的主要人物，"
+            "给出 name、一句话 description、别名 aliases、role（主角/反派/配角）。\n\n"
+            f"小说片段：\n{win}"
+        )
+        out = _structured(
+            client,
+            system="你是专业编剧助手，擅长从小说中梳理人物。",
+            prompt=prompt,
+            output_model=CharacterList,
+            max_tokens=4000,
+            usage=usage,
+        )
+        if out and out.characters:
+            groups.append(out.characters)
+    return merge_characters(groups)
 
 
 def _extract_story_meta_online(full_text: str, usage: Optional[dict] = None) -> StoryMeta:
@@ -169,22 +249,27 @@ def _convert_chapter_online(
 ) -> List[Scene]:
     client = _client()
     char_hint = "；".join(f"{c.name}({c.description})" for c in characters) or "（无）"
-    prompt = (
-        f"{RULES}\n\n"
-        f"已知人物表（对白/旁白的 character 必须使用这些名字）：{char_hint}\n\n"
-        "请把下面这一章小说转换为结构化剧本。按时间/地点切分为若干场，"
-        "每场给出 heading、synopsis 和有序的 elements。\n\n"
-        f"本章正文：\n{chapter_text}"
-    )
-    out = _structured(
-        client,
-        system="你是专业编剧，把小说改编成规范的剧本初稿。",
-        prompt=prompt,
-        output_model=SceneList,
-        max_tokens=16000,
-        usage=usage,
-    )
-    return out.scenes if out else []
+    scenes: List[Scene] = []
+    # 超长章节按段落切块，逐块转换再拼接，避免单次输出被 max_tokens 截断而丢场次
+    for chunk in chunk_by_paragraph(chapter_text):
+        prompt = (
+            f"{RULES}\n\n"
+            f"已知人物表（对白/旁白的 character 必须使用这些名字）：{char_hint}\n\n"
+            "请把下面这段小说正文转换为结构化剧本。按时间/地点切分为若干场，"
+            "每场给出 heading、synopsis 和有序的 elements。\n\n"
+            f"正文：\n{chunk}"
+        )
+        out = _structured(
+            client,
+            system="你是专业编剧，把小说改编成规范的影视剧本初稿。",
+            prompt=prompt,
+            output_model=SceneList,
+            max_tokens=16000,
+            usage=usage,
+        )
+        if out and out.scenes:
+            scenes.extend(out.scenes)
+    return scenes
 
 
 # =========================================================

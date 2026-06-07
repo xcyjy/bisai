@@ -189,6 +189,8 @@ def create_project(
 ):
     if not req.text or len(req.text.strip()) < 50:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "小说文本太短，请提供至少 3 个章节。")
+    if len(req.text) > 100_000:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "小说文本过长（>10万字），请分批转换。")
 
     # AI 引擎门禁
     if req.engine == "ai":
