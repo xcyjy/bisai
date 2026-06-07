@@ -1,0 +1,47 @@
+# ============================================================
+# 本地开发栈（你日常本地测试用）
+#   docker compose up            # 起 数据库 + 后端(热重载)
+#   docker compose up db         # 只起数据库，前后端用原生命令跑
+#
+# 前端建议仍用原生跑（热更新最快）：
+#   cd frontend && npm install && npm run dev
+#   → Vite 代理 /api 到 http://localhost:8000（本文件已暴露 8000）
+#
+# 不想用 Docker？后端默认 SQLite，直接 uvicorn 也能跑，无需本栈。
+# ============================================================
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: novel
+      POSTGRES_PASSWORD: novel
+      POSTGRES_DB: novel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U novel"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://novel:novel@db:5432/novel
+      JWT_SECRET: dev-secret-change-me
+      FORCE_OFFLINE: "true"            # 本地默认离线引擎，零成本
+      CORS_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      # ANTHROPIC_API_KEY: ""          # 需要 Claude 时填，并把 FORCE_OFFLINE 设 false
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app                 # 挂源码，配合 --reload 热更新
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

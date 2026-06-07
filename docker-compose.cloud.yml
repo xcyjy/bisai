@@ -1,0 +1,58 @@
+# ============================================================
+# 云端部署栈（一台云服务器即可整套拉起）
+#   1. 复制 .env.cloud.example 为 .env 并填好密钥（JWT_SECRET / DB 密码 / 可选 Claude Key）
+#   2. docker compose -f docker-compose.cloud.yml --env-file .env up -d --build
+#
+# 与本地栈的区别：
+#   - 镜像构建产物运行，不挂源码、不热重载
+#   - 前端用 nginx 托管静态文件 + 反代 /api，对外只暴露 80
+#   - restart: always，崩溃自动拉起
+#   - 所有密钥来自环境变量，不写死在文件里
+#   - 数据库密码、JWT 密钥必须通过 .env 注入
+#
+# 进阶：生产数据库建议改用云托管 PostgreSQL（如七牛云/RDS），
+#       届时删除下方 db 服务，把 DATABASE_URL 指向托管实例即可。
+# ============================================================
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-novel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?须在 .env 设置数据库密码}
+      POSTGRES_DB: ${POSTGRES_DB:-novel}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-novel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-novel}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-novel}
+      JWT_SECRET: ${JWT_SECRET:?须在 .env 设置 JWT 密钥}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-10080}
+      CORS_ORIGINS: ${CORS_ORIGINS:?须设置允许的前端域名，如 https://your-domain.com}
+      FORCE_OFFLINE: ${FORCE_OFFLINE:-false}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SCRIPT_MODEL: ${SCRIPT_MODEL:-claude-opus-4-8}
+    # 生产用多 worker；如需异步任务（Phase 2）再拆出独立 worker 容器
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"          # 对外入口；上 HTTPS 时前面再加一层反代/证书
+    restart: always
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
