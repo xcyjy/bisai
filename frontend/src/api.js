@@ -60,6 +60,17 @@ export const saveScreenplay = (id, screenplay) =>
 export const deleteProject = (id) =>
   request(`/api/projects/${id}`, { method: 'DELETE' })
 
+// ---- 异步任务 ----
+export const getJob = (id) => request(`/api/jobs/${id}`)
+
+// ---- 账户 / 计费 ----
+export const fetchStats = () => request('/api/me/stats')
+export const listPlans = () => request('/api/plans')
+export const createOrder = (sku) =>
+  request('/api/orders', { method: 'POST', body: { sku } })
+export const payOrder = (orderId) =>
+  request(`/api/orders/${orderId}/pay`, { method: 'POST', body: {} })
+
 // ---- 其它 ----
 export async function health() {
   const resp = await fetch('/api/health')

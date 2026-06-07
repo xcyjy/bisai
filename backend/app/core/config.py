@@ -26,9 +26,24 @@ class Settings(BaseSettings):
     # ---- CORS（逗号分隔的允许来源；本地默认放开 Vite）----
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # ---- 大模型（AI 精修引擎）----
+    # 本地不配则 AI 引擎不可用，前端仍可用免费离线引擎；云上配置后自动启用。
+    anthropic_api_key: str = ""
+    # 默认用最强的 Opus；高频量产可改 claude-sonnet-4-6 / claude-haiku-4-5 省钱。
+    script_model: str = "claude-opus-4-8"
+    # 强制离线（即使配了 key，调试时可关掉 AI）
+    force_offline: bool = False
+
+    # ---- 注册赠送的初始积分（1 次 AI 转换 = 1 积分；离线转换不扣分）----
+    free_signup_credits: int = 3
+
     @property
     def cors_origin_list(self) -> List[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def ai_available(self) -> bool:
+        return bool(self.anthropic_api_key) and not self.force_offline
 
 
 settings = Settings()

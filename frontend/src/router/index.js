@@ -16,6 +16,12 @@ const routes = [
     component: () => import('../views/Workspace.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/pricing',
+    name: 'pricing',
+    component: () => import('../views/Pricing.vue'),
+    meta: { requiresAuth: true },
+  },
 ]
 
 const router = createRouter({

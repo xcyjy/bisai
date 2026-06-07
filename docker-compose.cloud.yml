@@ -39,6 +39,7 @@ services:
       FORCE_OFFLINE: ${FORCE_OFFLINE:-false}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SCRIPT_MODEL: ${SCRIPT_MODEL:-claude-opus-4-8}
+      FREE_SIGNUP_CREDITS: ${FREE_SIGNUP_CREDITS:-3}
     # 生产用多 worker；如需异步任务（Phase 2）再拆出独立 worker 容器
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
     restart: always

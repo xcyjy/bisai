@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-import os
 import re
 from typing import List, Optional
 
 from .chapters import paragraphs
+from .core.config import settings
 from .schema import (
     Character,
     CharacterList,
@@ -20,7 +20,9 @@ from .schema import (
     SceneList,
 )
 
-MODEL = os.environ.get("SCRIPT_MODEL", "claude-opus-4-8")
+
+def _model() -> str:
+    return settings.script_model
 
 # ---- 转换铁律（注入到 Prompt，也是离线规则的设计依据）----
 RULES = """你是一位专业编剧，正在把小说改编成影视剧本初稿。严格遵守以下铁律：
@@ -43,10 +45,11 @@ _TIME_CUES = ["第二天", "次日", "傍晚", "黄昏", "清晨", "夜里", "�
 _QUOTE_RE = re.compile(r"[“\"「](.+?)[”\"」]")
 
 
-def _is_offline() -> bool:
-    if os.environ.get("FORCE_OFFLINE", "").lower() == "true":
+def _is_offline(use_ai: bool) -> bool:
+    """是否走离线规则引擎。use_ai=False 强制离线；use_ai=True 但未配置 key 也回落离线。"""
+    if not use_ai:
         return True
-    return not os.environ.get("ANTHROPIC_API_KEY")
+    return not settings.ai_available
 
 
 # =========================================================
@@ -55,10 +58,20 @@ def _is_offline() -> bool:
 
 def _client():
     import anthropic
-    return anthropic.Anthropic()
+    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 
-def _extract_characters_online(full_text: str) -> List[Character]:
+def _track(usage: Optional[dict], resp) -> None:
+    """累加一次调用的 token 用量到 usage 累加器。"""
+    if usage is None:
+        return
+    u = getattr(resp, "usage", None)
+    if u is not None:
+        usage["in_tokens"] = usage.get("in_tokens", 0) + getattr(u, "input_tokens", 0)
+        usage["out_tokens"] = usage.get("out_tokens", 0) + getattr(u, "output_tokens", 0)
+
+
+def _extract_characters_online(full_text: str, usage: Optional[dict] = None) -> List[Character]:
     client = _client()
     prompt = (
         "下面是一篇小说。请抽取主要人物，生成全局人物表。"
@@ -66,17 +79,20 @@ def _extract_characters_online(full_text: str) -> List[Character]:
         f"小说全文：\n{full_text[:12000]}"
     )
     resp = client.messages.parse(
-        model=MODEL,
+        model=_model(),
         max_tokens=4000,
         system="你是专业编剧助手，擅长从小说中梳理人物。",
         messages=[{"role": "user", "content": prompt}],
         output_format=CharacterList,
     )
+    _track(usage, resp)
     out = resp.parsed_output
     return out.characters if out else []
 
 
-def _convert_chapter_online(chapter_text: str, characters: List[Character]) -> List[Scene]:
+def _convert_chapter_online(
+    chapter_text: str, characters: List[Character], usage: Optional[dict] = None
+) -> List[Scene]:
     client = _client()
     char_hint = "；".join(f"{c.name}({c.description})" for c in characters) or "（无）"
     prompt = (
@@ -87,12 +103,13 @@ def _convert_chapter_online(chapter_text: str, characters: List[Character]) -> L
         f"本章正文：\n{chapter_text}"
     )
     resp = client.messages.parse(
-        model=MODEL,
+        model=_model(),
         max_tokens=16000,
         system="你是专业编剧，把小说改编成规范的影视剧本初稿。",
         messages=[{"role": "user", "content": prompt}],
         output_format=SceneList,
     )
+    _track(usage, resp)
     out = resp.parsed_output
     return out.scenes if out else []
 
@@ -219,24 +236,31 @@ def _convert_chapter_offline(chapter_text: str, characters: List[Character]) -> 
 # 对外统一接口
 # =========================================================
 
-def extract_characters(full_text: str) -> List[Character]:
-    if _is_offline():
+def extract_characters(
+    full_text: str, use_ai: bool = False, usage: Optional[dict] = None
+) -> List[Character]:
+    if _is_offline(use_ai):
         return _extract_characters_offline(full_text)
     try:
-        return _extract_characters_online(full_text)
+        return _extract_characters_online(full_text, usage)
     except Exception:
         return _extract_characters_offline(full_text)
 
 
-def convert_chapter(chapter_text: str, characters: List[Character]) -> List[Scene]:
-    if _is_offline():
+def convert_chapter(
+    chapter_text: str,
+    characters: List[Character],
+    use_ai: bool = False,
+    usage: Optional[dict] = None,
+) -> List[Scene]:
+    if _is_offline(use_ai):
         return _convert_chapter_offline(chapter_text, characters)
     try:
-        return _convert_chapter_online(chapter_text, characters)
+        return _convert_chapter_online(chapter_text, characters, usage)
     except Exception:
         # 在线失败兜底为离线，保证不中断
         return _convert_chapter_offline(chapter_text, characters)
 
 
-def engine_mode() -> str:
-    return "offline-rules" if _is_offline() else f"claude:{MODEL}"
+def engine_mode(use_ai: bool = False) -> str:
+    return "offline-rules" if _is_offline(use_ai) else f"claude:{_model()}"

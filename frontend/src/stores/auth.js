@@ -6,6 +6,8 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const token = ref(api.getToken())
   const isLoggedIn = computed(() => !!token.value)
+  const credits = computed(() => user.value?.credits ?? 0)
+  const isMember = computed(() => user.value?.plan === 'pro')
 
   function _setSession(resp) {
     token.value = resp.access_token
@@ -27,11 +29,18 @@ export const useAuthStore = defineStore('auth', () => {
       logout()
     }
   }
+  // 购买 / 转换后刷新用户态（积分、会员）
+  async function refresh() {
+    if (!token.value) return
+    try {
+      user.value = await api.fetchMe()
+    } catch { /* 忽略 */ }
+  }
   function logout() {
     user.value = null
     token.value = ''
     api.setToken('')
   }
 
-  return { user, token, isLoggedIn, login, register, loadMe, logout }
+  return { user, token, isLoggedIn, credits, isMember, login, register, loadMe, refresh, logout }
 })

@@ -1,14 +1,17 @@
 """转换流水线：把整篇小说装配成完整剧本 dict。
 
 流程：分章 -> 全局人物抽取 -> 逐章转换 -> 装配 + 编号 -> 校验。
+支持 use_ai（AI 精修 vs 离线规则）与 progress 回调（用于异步任务进度）。
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from .chapters import split_chapters
 from .converter import convert_chapter, engine_mode, extract_characters
 from .schema import validate_screenplay
+
+ProgressCb = Optional[Callable[[int, int], None]]
 
 
 def convert_novel(
@@ -16,24 +19,36 @@ def convert_novel(
     title: str = "未命名剧本",
     original_work: str = "",
     author: str = "",
+    use_ai: bool = False,
+    progress: ProgressCb = None,
 ) -> dict:
-    """返回完整剧本 dict（含 meta / characters / scenes）+ 统计 + 校验结果。"""
+    """返回完整剧本 dict（含 meta / characters / scenes）+ 统计 + 校验结果。
+
+    progress(done, total)：每完成一章回调一次，便于异步任务上报进度。
+    stats 中含 token 用量（in_tokens/out_tokens），离线时为 0。
+    """
     chapters = split_chapters(text)
     chapter_titles = [t for t, _ in chapters]
+    total = len(chapters)
+    usage = {"in_tokens": 0, "out_tokens": 0}
+
+    if progress:
+        progress(0, total)
 
     # 1) 全局人物表
-    characters = extract_characters(text)
+    characters = extract_characters(text, use_ai=use_ai, usage=usage)
 
     # 2) 逐章转换
     all_scenes = []
-    for _title, body in chapters:
-        all_scenes.extend(convert_chapter(body, characters))
+    for i, (_title, body) in enumerate(chapters, start=1):
+        all_scenes.extend(convert_chapter(body, characters, use_ai=use_ai, usage=usage))
+        if progress:
+            progress(i, total)
 
     # 3) 装配 + 连续编号
     scenes_out = []
     for i, scene in enumerate(all_scenes, start=1):
         s = scene.model_dump()
-        # 清理 None 字段，YAML 更干净
         for el in s["elements"]:
             if el.get("character") is None:
                 el.pop("character", None)
@@ -60,7 +75,7 @@ def convert_novel(
 
     problems = validate_screenplay(doc)
     stats = {
-        "engine": engine_mode(),
+        "engine": engine_mode(use_ai),
         "chapters": len(chapters),
         "characters": len(characters),
         "scenes": len(scenes_out),
@@ -72,5 +87,7 @@ def convert_novel(
         ),
         "valid": len(problems) == 0,
         "problems": problems,
+        "in_tokens": usage["in_tokens"],
+        "out_tokens": usage["out_tokens"],
     }
     return {"screenplay": doc, "stats": stats}
