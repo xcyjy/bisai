@@ -45,7 +45,12 @@ const typeLabel = { action: '动作', voiceover: '画外音', dialogue: '对白'
     <!-- 主视觉 -->
     <section class="hero">
       <div class="hero-left">
-        <div class="badge">✨ AI 驱动 · 一键成稿</div>
+        <div class="brand-hero">
+          <span class="bh-mark">墨</span>
+          <span class="bh-cn">墨幕</span>
+          <span class="bh-en">Inkscene</span>
+        </div>
+        <p class="tagline">笔墨成幕，小说一键成剧</p>
         <h1>
           把你的小说<br />
           一键变成
@@ -144,7 +149,23 @@ const typeLabel = { action: '动作', voiceover: '画外音', dialogue: '对白'
   padding: 40px 44px;
   box-shadow: 0 12px 32px rgba(120,80,30,.08);
 }
-.badge { display: inline-block; background: rgba(192,97,47,.12); color: #c0612f; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; animation: fadeUp .6s both; }
+/* ---- 品牌字标 ---- */
+.brand-hero { display: inline-flex; align-items: center; gap: 12px; animation: fadeUp .6s both; }
+.bh-mark {
+  width: 46px; height: 46px; border-radius: 13px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #c0612f, #f0a868); color: #fff;
+  font-size: 27px; font-weight: 800; font-family: "KaiTi", "STKaiti", "Microsoft YaHei", serif;
+  box-shadow: 0 8px 18px rgba(192,97,47,.34);
+}
+.bh-cn { font-size: 32px; font-weight: 800; letter-spacing: 5px; color: #2a2622; }
+.bh-en { font-size: 13px; font-weight: 700; letter-spacing: 4px; color: #b08a4f; text-transform: uppercase; align-self: flex-end; padding-bottom: 7px; }
+.tagline {
+  font-size: 19px; font-weight: 700; margin: 16px 0 0; letter-spacing: 1.5px;
+  background: linear-gradient(90deg,#c0612f,#f0a868);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: fadeUp .6s .05s both;
+}
 .hero h1 { font-size: 44px; line-height: 1.25; margin: 16px 0; animation: fadeUp .6s .05s both; }
 .rotator { display: inline-block; }
 .rot-word { display: inline-block; background: linear-gradient(90deg,#c0612f,#f0a868); -webkit-background-clip: text; background-clip: text; color: transparent; }

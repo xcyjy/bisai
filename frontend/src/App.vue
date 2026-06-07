@@ -40,7 +40,13 @@ function logout() {
   <div class="app-shell">
     <header class="topbar">
       <div class="topbar-inner">
-        <h1 class="brand" @click="router.push('/')">🎬 小说转剧本</h1>
+        <div class="brand" @click="router.push('/')" title="墨幕 Inkscene · 笔墨成幕，小说一键成剧">
+          <span class="brand-mark">墨</span>
+          <span class="brand-words">
+            <span class="brand-cn">墨幕</span>
+            <span class="brand-en">INKSCENE</span>
+          </span>
+        </div>
         <nav v-if="auth.isLoggedIn" class="nav">
           <router-link to="/works">我的作品</router-link>
           <router-link to="/workspace">+ 新建</router-link>
@@ -122,7 +128,20 @@ body {
   max-width: 1160px; margin: 0 auto; padding: 10px 20px;
   display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
 }
-.brand { font-size: 19px; font-weight: 800; margin: 0; cursor: pointer; letter-spacing: .3px; }
+.brand { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+.brand-mark {
+  width: 32px; height: 32px; flex: none; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--brand), #e0894f);
+  color: #fff; font-size: 19px; font-weight: 800;
+  font-family: "KaiTi", "STKaiti", "Microsoft YaHei", serif;
+  box-shadow: 0 3px 9px rgba(192, 97, 47, .32);
+  transition: transform .15s, box-shadow .15s;
+}
+.brand:hover .brand-mark { transform: translateY(-1px) rotate(-3deg); box-shadow: 0 6px 14px rgba(192, 97, 47, .4); }
+.brand-words { display: flex; flex-direction: column; line-height: 1.05; }
+.brand-cn { font-size: 18px; font-weight: 800; letter-spacing: 3px; color: var(--text); }
+.brand-en { font-size: 9px; font-weight: 600; letter-spacing: 2.5px; color: var(--text-3); }
 .nav { display: flex; gap: 8px; align-items: center; font-size: 14px; }
 .nav a { color: var(--text-2); text-decoration: none; padding: 6px 12px; border-radius: 999px; transition: background .15s, color .15s; }
 .nav a:hover { background: var(--brand-soft); color: var(--brand); }
