@@ -1,206 +1,36 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
-import { convert, exportYaml, health, sampleNovel } from './api.js'
+import { onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from './stores/auth.js'
 
-const ELEMENT_TYPES = [
-  { value: 'action', label: '动作' },
-  { value: 'dialogue', label: '对白' },
-  { value: 'voiceover', label: '旁白' },
-  { value: 'transition', label: '转场' },
-]
+const auth = useAuthStore()
+const router = useRouter()
 
-const novelText = ref('')
-const title = ref('未命名剧本')
-const author = ref('')
-const loading = ref(false)
-const errorMsg = ref('')
-const engine = ref('')
+onMounted(() => auth.loadMe())
 
-const screenplay = ref(null)   // 可编辑的剧本对象
-const stats = ref(null)
-const yamlText = ref('')
-const showYaml = ref(false)
-
-onMounted(async () => {
-  try {
-    const h = await health()
-    engine.value = h.engine
-  } catch (e) {
-    engine.value = '后端未连接'
-  }
-})
-
-function loadSample() {
-  novelText.value = sampleNovel()
-  title.value = '旧城轨迹'
-  author.value = '改编自原创短篇'
-}
-
-async function doConvert() {
-  errorMsg.value = ''
-  if (novelText.value.trim().length < 50) {
-    errorMsg.value = '请先粘贴或载入小说文本（建议 ≥3 章）。'
-    return
-  }
-  loading.value = true
-  try {
-    const res = await convert({
-      text: novelText.value,
-      title: title.value,
-      author: author.value,
-    })
-    screenplay.value = res.screenplay
-    stats.value = res.stats
-    yamlText.value = res.yaml
-    engine.value = res.stats.engine
-  } catch (e) {
-    errorMsg.value = e.message
-  } finally {
-    loading.value = false
-  }
-}
-
-// 原文按场号粗略对照：直接展示整段原文（MVP 用左栏只读展示）
-const originalParas = computed(() =>
-  novelText.value.split(/\n+/).map((s) => s.trim()).filter(Boolean)
-)
-
-function addElement(scene) {
-  scene.elements.push({ type: 'action', text: '' })
-}
-function removeElement(scene, idx) {
-  scene.elements.splice(idx, 1)
-}
-function removeScene(idx) {
-  screenplay.value.scenes.splice(idx, 1)
-  // 重新编号
-  screenplay.value.scenes.forEach((s, i) => (s.scene_number = i + 1))
-}
-
-async function doExport() {
-  try {
-    const res = await exportYaml(screenplay.value)
-    yamlText.value = res.yaml
-    stats.value = { ...stats.value, valid: res.valid, problems: res.problems }
-    showYaml.value = true
-  } catch (e) {
-    errorMsg.value = e.message
-  }
-}
-
-function downloadYaml() {
-  const blob = new Blob([yamlText.value], { type: 'text/yaml;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${title.value || 'screenplay'}.yaml`
-  a.click()
-  URL.revokeObjectURL(url)
+function logout() {
+  auth.logout()
+  router.push({ name: 'login' })
 }
 </script>
 
 <template>
   <div class="app">
     <header class="topbar">
-      <h1>🎬 AI 小说转剧本工具</h1>
-      <span class="engine">引擎：{{ engine || '...' }}</span>
+      <h1 @click="router.push('/')" style="cursor:pointer">🎬 AI 小说转剧本工具</h1>
+      <nav v-if="auth.isLoggedIn" class="nav">
+        <router-link to="/works">我的作品</router-link>
+        <router-link to="/workspace">+ 新建</router-link>
+        <span class="user">{{ auth.user?.nickname || auth.user?.email }}</span>
+        <span class="plan">{{ auth.user?.plan || 'free' }}</span>
+        <button class="ghost small" @click="logout">退出</button>
+      </nav>
+      <nav v-else class="nav">
+        <button class="primary small" @click="router.push({ name: 'login' })">登录 / 注册</button>
+      </nav>
     </header>
 
-    <!-- 输入区 -->
-    <section class="input-bar">
-      <div class="meta-row">
-        <input v-model="title" placeholder="剧本标题" />
-        <input v-model="author" placeholder="作者/改编者" />
-        <button class="ghost" @click="loadSample">载入示例小说</button>
-        <button class="primary" :disabled="loading" @click="doConvert">
-          {{ loading ? '转换中…' : '一键转换' }}
-        </button>
-      </div>
-      <textarea
-        v-model="novelText"
-        placeholder="在此粘贴小说全文（建议至少 3 个章节，章节标题如「第一章」会自动识别）…"
-      />
-      <p v-if="errorMsg" class="error">{{ errorMsg }}</p>
-    </section>
-
-    <!-- 统计 -->
-    <section v-if="stats" class="stats">
-      <span>章节 {{ stats.chapters }}</span>
-      <span>人物 {{ stats.characters }}</span>
-      <span>场次 {{ stats.scenes }}</span>
-      <span>对白 {{ stats.dialogues }}</span>
-      <span>旁白 {{ stats.voiceovers }}</span>
-      <span :class="stats.valid ? 'ok' : 'bad'">
-        Schema 校验：{{ stats.valid ? '通过 ✓' : '有 ' + stats.problems.length + ' 个问题' }}
-      </span>
-      <button class="primary" @click="doExport">导出 / 刷新 YAML</button>
-    </section>
-
-    <!-- 双栏 -->
-    <section v-if="screenplay" class="panes">
-      <!-- 左：原文 -->
-      <div class="pane">
-        <h2>原文</h2>
-        <div class="original">
-          <p v-for="(p, i) in originalParas" :key="i">{{ p }}</p>
-        </div>
-      </div>
-
-      <!-- 右：可编辑剧本 -->
-      <div class="pane">
-        <h2>剧本（可编辑）</h2>
-
-        <div class="characters">
-          <strong>人物表：</strong>
-          <span v-for="c in screenplay.characters" :key="c.id" class="chip">{{ c.name }}</span>
-        </div>
-
-        <div v-for="(scene, si) in screenplay.scenes" :key="si" class="scene">
-          <div class="scene-head">
-            <span class="scene-no">场 {{ scene.scene_number }}</span>
-            <select v-model="scene.heading.int_ext">
-              <option>INT</option><option>EXT</option><option>INT/EXT</option>
-            </select>
-            <input v-model="scene.heading.location" placeholder="地点" />
-            <input v-model="scene.heading.time" placeholder="时间" />
-            <button class="del" @click="removeScene(si)">删除场</button>
-          </div>
-
-          <input class="synopsis" v-model="scene.synopsis" placeholder="本场梗概" />
-
-          <div v-for="(el, ei) in scene.elements" :key="ei" class="element" :class="el.type">
-            <select v-model="el.type">
-              <option v-for="t in ELEMENT_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
-            </select>
-            <input
-              v-if="el.type === 'dialogue' || el.type === 'voiceover'"
-              class="char" v-model="el.character" placeholder="说话人"
-            />
-            <input
-              v-if="el.type === 'dialogue'"
-              class="paren" v-model="el.parenthetical" placeholder="(怎么说)"
-            />
-            <textarea class="el-text" v-model="el.text" rows="1" placeholder="内容" />
-            <button class="del" @click="removeElement(scene, ei)">×</button>
-          </div>
-
-          <button class="ghost small" @click="addElement(scene)">+ 添加元素</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- YAML 输出 -->
-    <section v-if="showYaml" class="yaml-out">
-      <div class="yaml-head">
-        <h2>YAML 输出</h2>
-        <button class="primary" @click="downloadYaml">下载 .yaml</button>
-        <button class="ghost" @click="showYaml = false">收起</button>
-      </div>
-      <ul v-if="stats && !stats.valid" class="problems">
-        <li v-for="(p, i) in stats.problems" :key="i">⚠ {{ p }}</li>
-      </ul>
-      <pre>{{ yamlText }}</pre>
-    </section>
+    <router-view />
   </div>
 </template>
 
@@ -208,8 +38,13 @@ function downloadYaml() {
 * { box-sizing: border-box; }
 body { margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; background: #f4f1ea; color: #2b2b2b; }
 .app { max-width: 1200px; margin: 0 auto; padding: 16px; }
-.topbar { display: flex; align-items: center; justify-content: space-between; }
+.topbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .topbar h1 { font-size: 22px; margin: 8px 0; }
+.nav { display: flex; gap: 12px; align-items: center; font-size: 14px; }
+.nav a { color: #8a6f4a; text-decoration: none; padding: 4px 8px; border-radius: 6px; }
+.nav a.router-link-active { background: #efe7d6; color: #6b5436; font-weight: 600; }
+.nav .user { color: #2b2b2b; font-weight: 600; }
+.nav .plan { font-size: 12px; color: #8a6f4a; background: #efe7d6; padding: 2px 8px; border-radius: 10px; }
 .engine { font-size: 13px; color: #8a6f4a; background: #efe7d6; padding: 4px 10px; border-radius: 12px; }
 
 .input-bar { margin: 12px 0; }
@@ -258,6 +93,24 @@ button.del { background: transparent; color: #b00020; padding: 2px 8px; }
 .yaml-head h2 { flex: 1; font-size: 16px; margin: 0; }
 .problems { color: #b00020; }
 pre { background: #2b2b2b; color: #e8e8e8; padding: 14px; border-radius: 8px; overflow: auto; max-height: 50vh; font-size: 13px; }
+
+/* 登录页 */
+.auth-wrap { max-width: 380px; margin: 8vh auto; background: #fff; border: 1px solid #e3d8bf; border-radius: 12px; padding: 28px; }
+.auth-wrap h2 { margin: 0 0 18px; font-size: 20px; }
+.auth-wrap label { display: block; font-size: 13px; color: #6b5436; margin: 10px 0 4px; }
+.auth-wrap input { width: 100%; padding: 9px; border: 1px solid #d8ccae; border-radius: 6px; }
+.auth-wrap .primary { width: 100%; margin-top: 18px; padding: 10px; }
+.auth-switch { margin-top: 14px; font-size: 13px; text-align: center; color: #8a6f4a; }
+.auth-switch a { color: #c0612f; cursor: pointer; }
+
+/* 作品列表 */
+.works-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin-top: 16px; }
+.work-card { background: #fff; border: 1px solid #e3d8bf; border-radius: 10px; padding: 14px; cursor: pointer; transition: box-shadow .15s; }
+.work-card:hover { box-shadow: 0 3px 10px rgba(0,0,0,.08); }
+.work-card h3 { margin: 0 0 6px; font-size: 16px; }
+.work-card .meta { font-size: 12px; color: #8a7a5a; }
+.work-card .card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+.empty { color: #8a7a5a; margin-top: 24px; text-align: center; }
 
 @media (max-width: 860px) { .panes { grid-template-columns: 1fr; } }
 </style>

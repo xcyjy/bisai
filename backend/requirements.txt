@@ -4,3 +4,11 @@ anthropic>=0.40
 pydantic>=2.5
 PyYAML>=6.0
 python-dotenv>=1.0
+# ---- C 端产品化 Phase 1：登录 + 持久化 ----
+pydantic-settings>=2.1
+sqlmodel>=0.0.16
+passlib[bcrypt]>=1.7
+python-jose[cryptography]>=3.3
+email-validator>=2.0
+# PostgreSQL 驱动（本地用 SQLite 时可不装；部署到云时启用）
+psycopg[binary]>=3.1

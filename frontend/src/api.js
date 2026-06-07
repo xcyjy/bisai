@@ -1,4 +1,70 @@
-// 与后端交互的薄封装。
+// 与后端交互的薄封装。自动携带 JWT；401 时清除登录态并跳登录页。
+
+const TOKEN_KEY = 'n2s_token'
+
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || ''
+}
+export function setToken(t) {
+  if (t) localStorage.setItem(TOKEN_KEY, t)
+  else localStorage.removeItem(TOKEN_KEY)
+}
+
+// FastAPI 的 detail 可能是字符串，也可能是 422 校验错误数组；统一成可读文本
+function formatDetail(detail) {
+  if (!detail) return ''
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail.map((e) => e.msg || JSON.stringify(e)).join('；')
+  }
+  return typeof detail === 'object' ? JSON.stringify(detail) : String(detail)
+}
+
+async function request(url, { method = 'GET', body, auth = true } = {}) {
+  const headers = {}
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  if (auth && getToken()) headers['Authorization'] = `Bearer ${getToken()}`
+
+  const resp = await fetch(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+
+  if (resp.status === 401) {
+    setToken('')
+    // 交给路由守卫处理跳转
+    window.dispatchEvent(new Event('n2s-unauthorized'))
+  }
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+    throw new Error(formatDetail(err.detail) || '请求失败')
+  }
+  return resp.json()
+}
+
+// ---- 认证 ----
+export const register = (payload) =>
+  request('/api/auth/register', { method: 'POST', body: payload, auth: false })
+export const login = (payload) =>
+  request('/api/auth/login', { method: 'POST', body: payload, auth: false })
+export const fetchMe = () => request('/api/auth/me')
+
+// ---- 作品 ----
+export const listProjects = () => request('/api/projects')
+export const createProject = (payload) =>
+  request('/api/projects', { method: 'POST', body: payload })
+export const getProject = (id) => request(`/api/projects/${id}`)
+export const saveScreenplay = (id, screenplay) =>
+  request(`/api/projects/${id}/screenplay`, { method: 'PUT', body: { screenplay } })
+export const deleteProject = (id) =>
+  request(`/api/projects/${id}`, { method: 'DELETE' })
+
+// ---- 其它 ----
+export async function health() {
+  const resp = await fetch('/api/health')
+  return resp.json()
+}
 
 const SAMPLE = `旧城轨迹
 
@@ -26,30 +92,4 @@ const SAMPLE = `旧城轨迹
 
 export function sampleNovel() {
   return SAMPLE
-}
-
-async function post(url, body) {
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || '请求失败')
-  }
-  return resp.json()
-}
-
-export function convert(payload) {
-  return post('/api/convert', payload)
-}
-
-export function exportYaml(screenplay) {
-  return post('/api/export', { screenplay })
-}
-
-export async function health() {
-  const resp = await fetch('/api/health')
-  return resp.json()
 }
