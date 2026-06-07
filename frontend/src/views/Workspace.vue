@@ -43,7 +43,7 @@ const model = ref('')
 // 多 Agent 实时活动流
 const agentEvents = ref([])
 const agentStats = ref(null)
-const AGENT_ICON = { start: '▶', done: '✓', cache: '⚡', error: '⚠' }
+const AGENT_ICON = { start: '▶', done: '✓', cache: '⚡', error: '⚠', review: '🔎' }
 function agentIcon(s) { return AGENT_ICON[s] || '·' }
 const afTokens = computed(() => {
   const t = agentStats.value?.tokens
@@ -147,10 +147,83 @@ function loadSample() {
 
 const canUseAI = computed(() => auth.credits >= 1)
 
+// ---- 超长文本：客户端按章节智能分段（≤单次上限），让用户清楚地分段转换 ----
+const SEG_MAX = 90000          // 单段上限（留余量，后端硬上限 10 万字）
+const SEG_WARN = 30000         // 超过此字数开始提示
+const CHAPTER_RE = /^\s*(第\s*[0-9零一二三四五六七八九十百千两\s]+[章回节卷]|chapter\s+\d+|楔子|序章?|引子|后记|尾声|番外)/i
+
+function _splitChaptersJS(text) {
+  const lines = text.split(/\r?\n/)
+  const out = []
+  let title = null
+  let body = []
+  const flush = () => {
+    const b = body.join('\n')
+    if (title !== null || b.trim()) out.push({ title: title || '正文', body: b })
+  }
+  for (const line of lines) {
+    const s = line.trim()
+    if (s && s.length <= 40 && CHAPTER_RE.test(s)) { flush(); title = s; body = [] }
+    else body.push(line)
+  }
+  flush()
+  return out.filter((c) => c.body.trim() || c.title !== '正文')
+}
+
+function _segText(chapters) {
+  return chapters.map((c) => (c.title === '正文' ? c.body : c.title + '\n' + c.body)).join('\n\n')
+}
+
+function _buildSegments(text) {
+  if (text.length <= SEG_MAX) return []
+  const chs = _splitChaptersJS(text)
+  const mk = (cs) => ({
+    text: _segText(cs), chars: _segText(cs).length, chapterCount: cs.length,
+    range: cs.length ? `${cs[0].title} — ${cs[cs.length - 1].title}` : '',
+  })
+  if (!chs.length) { // 无章节标题：按字数硬切
+    const segs = []
+    for (let i = 0; i < text.length; i += SEG_MAX) {
+      segs.push({ text: text.slice(i, i + SEG_MAX), chars: Math.min(SEG_MAX, text.length - i),
+        chapterCount: 0, range: `第 ${i + 1}–${Math.min(text.length, i + SEG_MAX)} 字` })
+    }
+    return segs
+  }
+  const segs = []
+  let cur = []
+  let curLen = 0
+  for (const c of chs) {
+    const clen = c.title.length + c.body.length + 2
+    if (clen > SEG_MAX) { // 单章超长：先收尾，再硬切这章
+      if (cur.length) { segs.push(mk(cur)); cur = []; curLen = 0 }
+      const full = c.title + '\n' + c.body
+      for (let i = 0; i < full.length; i += SEG_MAX) {
+        segs.push({ text: full.slice(i, i + SEG_MAX), chars: Math.min(SEG_MAX, full.length - i),
+          chapterCount: 1, range: `${c.title}（第 ${Math.floor(i / SEG_MAX) + 1} 部分）` })
+      }
+      continue
+    }
+    if (cur.length && curLen + clen > SEG_MAX) { segs.push(mk(cur)); cur = []; curLen = 0 }
+    cur.push(c); curLen += clen
+  }
+  if (cur.length) segs.push(mk(cur))
+  return segs
+}
+
+const charCount = computed(() => novelText.value.length)
+const chapterCountJS = computed(() => _splitChaptersJS(novelText.value).length)
+const segments = ref([])
+const selectedSeg = ref(0)
+watch(novelText, (t) => { segments.value = _buildSegments(t || ''); selectedSeg.value = 0 })
+const needsSegment = computed(() => segments.value.length > 1)
+function conversionText() {
+  return needsSegment.value ? (segments.value[selectedSeg.value]?.text || novelText.value) : novelText.value
+}
+
 // 新建：提交转换 -> 后台任务
 async function doConvert() {
   errorMsg.value = ''
-  if (novelText.value.trim().length < 50) {
+  if (conversionText().trim().length < 50) {
     errorMsg.value = '请先粘贴或载入小说文本（建议 ≥3 章）。'
     return
   }
@@ -158,7 +231,7 @@ async function doConvert() {
   loading.value = true
   try {
     const res = await createProject({
-      text: novelText.value, title: title.value, author: author.value,
+      text: conversionText(), title: title.value, author: author.value,
       engine: engineChoice.value,
     })
     projectId.value = res.project_id
@@ -196,18 +269,40 @@ function startPoll(jobId) {
   tick()
 }
 
-// 多 Agent 编排：SSE 实时活动流（不落库，专注「看得见的编排 + 缓存/token」）
+// 多 Agent 编排：SSE 实时活动流 + 渐进式出稿（边转边把完成的章节渲染出来）
+const partialChars = ref([])
+const partialByChapter = ref({})
+const streaming = ref(false)   // 是否处于渐进式预览阶段
+
+function rebuildPartial() {
+  const byCh = partialByChapter.value
+  const idxs = Object.keys(byCh).map(Number).sort((a, b) => a - b)
+  let n = 0
+  const scenes = []
+  for (const i of idxs) {
+    for (const s of byCh[i]) scenes.push({ ...s, scene_number: ++n })
+  }
+  screenplay.value = {
+    meta: { title: title.value, generated_by: 'ai-draft' },
+    characters: partialChars.value,
+    scenes,
+  }
+}
+
 async function doAgentConvert() {
   agentEvents.value = []
   agentStats.value = null
   screenplay.value = null
   stats.value = null
+  partialChars.value = []
+  partialByChapter.value = {}
   errorMsg.value = ''
   converting.value = true
+  streaming.value = true
   job.value = null
   await streamAgents(
     {
-      text: novelText.value,
+      text: conversionText(),
       title: title.value,
       author: author.value,
       engine: modelsAvailable.value ? 'agents' : 'offline',
@@ -215,13 +310,21 @@ async function doAgentConvert() {
     },
     {
       onEvent: (e) => { agentEvents.value = [...agentEvents.value, e] },
+      onPartial: (p) => {
+        if (p.kind === 'characters') partialChars.value = p.characters || []
+        else if (p.kind === 'chapter') {
+          partialByChapter.value = { ...partialByChapter.value, [p.chapter_index]: p.scenes || [] }
+        }
+        rebuildPartial()
+      },
       onResult: (r) => {
-        screenplay.value = r.screenplay
+        screenplay.value = r.screenplay   // 用最终校验过的完整稿替换渐进稿
         stats.value = r.stats
         agentStats.value = r.stats
         converting.value = false
+        streaming.value = false
       },
-      onError: (err) => { errorMsg.value = err.message; converting.value = false },
+      onError: (err) => { errorMsg.value = err.message; converting.value = false; streaming.value = false },
     },
   )
 }
@@ -417,6 +520,27 @@ async function copyYaml() {
       <textarea v-model="novelText"
         placeholder="在此粘贴小说全文（建议至少 3 个章节，「第一章」等标题会自动识别）…" />
 
+      <!-- 字数 / 章节 提示 -->
+      <div class="text-meta">
+        <span>{{ charCount.toLocaleString() }} 字<template v-if="chapterCountJS"> · 约 {{ chapterCountJS }} 章</template></span>
+        <span v-if="charCount > SEG_WARN && !needsSegment" class="tm-warn">文本较长，转换可能稍慢</span>
+      </div>
+
+      <!-- 超长文本：智能分段 -->
+      <div v-if="needsSegment" class="seg-panel">
+        <div class="seg-head">
+          ⚠ 文本较长（{{ charCount.toLocaleString() }} 字），超过单次上限 {{ (SEG_MAX / 10000) }} 万字，
+          已按章节切为 <b>{{ segments.length }}</b> 段，请逐段转换：
+        </div>
+        <label v-for="(s, i) in segments" :key="i" class="seg-row" :class="{ on: selectedSeg === i }">
+          <input type="radio" :value="i" v-model="selectedSeg" />
+          <span class="seg-idx">第 {{ i + 1 }} 段</span>
+          <span class="seg-range">{{ s.range }}</span>
+          <span class="seg-chars">{{ s.chars.toLocaleString() }} 字<template v-if="s.chapterCount"> · {{ s.chapterCount }} 章</template></span>
+        </label>
+        <p class="seg-tip">转换完一段可继续选下一段；各段独立成稿，导出后可自行拼接。</p>
+      </div>
+
       <!-- 引擎选择 -->
       <div class="engine-pick">
         <label class="ep-opt" :class="{ on: engineChoice === 'offline' }">
@@ -460,7 +584,7 @@ async function copyYaml() {
       <div class="new-actions">
         <button class="ghost" @click="loadSample">载入示例小说</button>
         <button class="primary" :disabled="loading" @click="doConvert">
-          {{ loading ? '提交中…' : '开始转换 →' }}
+          {{ loading ? '提交中…' : (needsSegment ? `转换第 ${selectedSeg + 1} 段 →` : '开始转换 →') }}
         </button>
       </div>
     </section>
@@ -506,6 +630,10 @@ async function copyYaml() {
 
     <!-- 已转换：剧本视图 -->
     <template v-if="screenplay">
+      <div v-if="streaming" class="streaming-banner card">
+        <span class="sb-dot"></span>
+        正在边转边出稿…已生成 <b>{{ screenplay.scenes.length }}</b> 场，写完即可编辑
+      </div>
       <div class="ws-bar card">
         <div class="ws-title">
           <input v-model="title" class="title-input" placeholder="剧本标题" />
@@ -746,6 +874,19 @@ async function copyYaml() {
 .ep-cost { color: var(--brand); font-size: 12px; font-weight: 600; margin-left: 4px; }
 .ep-desc { font-size: 12px; color: var(--text-2); margin-top: 3px; }
 .ep-up { display: inline-block; margin-top: 6px; font-size: 12px; color: var(--brand); font-weight: 600; }
+
+/* 字数提示 + 智能分段 */
+.text-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 12px; color: var(--text-2); }
+.tm-warn { color: var(--brand); font-weight: 600; }
+.seg-panel { margin-top: 12px; border: 1.5px solid var(--brand); border-radius: var(--r-sm); padding: 12px 14px; background: var(--brand-soft); }
+.seg-head { font-size: 13px; color: var(--text); margin-bottom: 10px; line-height: 1.6; }
+.seg-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.seg-row.on { background: #fff; box-shadow: 0 0 0 1.5px var(--brand) inset; }
+.seg-row:hover { background: rgba(255,255,255,.6); }
+.seg-idx { font-weight: 700; min-width: 56px; }
+.seg-range { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg-chars { font-variant-numeric: tabular-nums; color: var(--text-2); }
+.seg-tip { margin: 8px 2px 0; font-size: 12px; color: var(--text-2); }
 .ep-wide { grid-column: 1 / -1; }
 .ep-new { color: var(--brand); font-size: 12px; font-weight: 600; margin-left: 4px; }
 @media (max-width: 640px) { .engine-pick { grid-template-columns: 1fr; } }
@@ -779,6 +920,10 @@ async function copyYaml() {
 .af-error .af-ico { color: var(--bad); }
 .af-error .af-note { color: var(--bad); }
 .af-start .af-ico { color: var(--brand); }
+
+/* 渐进式出稿横幅 */
+.streaming-banner { max-width: 980px; margin: 0 auto 10px; padding: 10px 16px; display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--brand); background: var(--brand-soft); }
+.sb-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--brand); animation: pulse 1.1s ease-in-out infinite; }
 
 /* 转换中 */
 .convert-card { max-width: 560px; margin: 8vh auto; padding: 36px; text-align: center; }

@@ -15,9 +15,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from time import perf_counter
 from typing import Callable, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 
 from .agentcache import cache, make_key
 from .chapters import split_chapters
@@ -26,6 +29,9 @@ from .converter import (
     _convert_chapter_offline,
     _extract_characters_offline,
     _is_offline,
+    chunk_by_paragraph,
+    merge_characters,
+    text_windows,
 )
 from .core.config import settings
 from .pipeline import _compact, _enrich_scene, _name_index
@@ -40,7 +46,7 @@ from .schema import (
 
 SCHEMA_VERSION = "1.0"
 MAX_CRITIC_ROUNDS = 2
-DEFAULT_CONCURRENCY = 5
+DEFAULT_CONCURRENCY = 8
 
 EmitCb = Optional[Callable[[dict], None]]
 
@@ -91,6 +97,10 @@ class Ledger:
 
     def error(self, agent: str, msg: str) -> None:
         self._push({"agent": agent, "status": "error", "note": str(msg)[:160]})
+
+    def verdict(self, agent: str, ok: bool, n: int) -> None:
+        self._push({"agent": agent, "status": "review",
+                    "note": "自检通过 ✓" if ok else f"发现 {n} 处待改 → 触发改写"})
 
 
 # =========================================================
@@ -177,58 +187,164 @@ async def _story_agent(client, model, full_text, ledger, offline) -> StoryMeta:
 
 async def _character_agent(client, model, full_text, ledger, offline) -> List[Character]:
     agent = "人物Agent"
-    ledger.start(agent, "抽取全局人物表")
     t0 = perf_counter()
     if offline:
+        ledger.start(agent, "抽取全局人物表")
         chars = await asyncio.to_thread(_extract_characters_offline, full_text)
         ledger.offline(agent, (perf_counter() - t0) * 1000)
         return chars
-    prompt = ("下面是一篇小说。请抽取主要人物，生成全局人物表。"
-              "为每个角色分配唯一 id（如 char_01），给出 name、一句话 description、"
-              "别名 aliases、role（主角/反派/配角）、性别、人物弧光 arc。\n"
-              "⚠️ 只收真实人物。绝不要把年号/纪年（如“献帝二十年”里的“献帝”）、朝代、地名、"
-              "官职或泛称（皇上/太子/王爷/娘娘/丞相/将军）当成人物；name 用本名，敬称放进 aliases。\n\n"
-              "小说全文：\n" + full_text[:12000])
-    try:
-        cl = await _structured_async(
-            client, model, "你是专业编剧助手，擅长从小说中梳理人物。", prompt,
-            CharacterList, 4000, agent=agent, ledger=ledger, cache_payload=full_text[:12000])
-        return cl.characters if cl else []
-    except Exception as e:
-        ledger.error(agent, str(e))
-        return await asyncio.to_thread(_extract_characters_offline, full_text)
+
+    # 全篇分窗 + 并发抽取 + 合并去重——长篇里后段才出场的角色也不漏。
+    # 量活：用 fast_model（Haiku）抽人名，快且省。
+    wins = text_windows(full_text)
+    ledger.start(agent, f"全篇分 {len(wins)} 窗并发抽取人物（快模型）")
+
+    async def _one(i: int, win: str):
+        label = f"人物Agent·片段{i}"
+        ledger.start(label, "抽取本片段人物")
+        prompt = ("下面是一篇小说的片段。请抽取其中出现的主要人物，给出 name、"
+                  "一句话 description、别名 aliases、role（主角/反派/配角）、性别、人物弧光 arc。\n"
+                  "⚠️ 只收真实人物。绝不要把年号/纪年（如“献帝二十年”里的“献帝”）、朝代、地名、"
+                  "官职或泛称（皇上/太子/王爷/娘娘/丞相/将军）当成人物；name 用本名，敬称放进 aliases。\n\n"
+                  "小说片段：\n" + win)
+        try:
+            cl = await _structured_async(
+                client, model, "你是专业编剧助手，擅长从小说中梳理人物。", prompt,
+                CharacterList, 4000, agent=label, ledger=ledger, cache_payload=win)
+            return cl.characters if cl else []
+        except Exception as e:
+            ledger.error(label, str(e))
+            return []
+
+    groups = await asyncio.gather(*[_one(i, w) for i, w in enumerate(wins, 1)])
+    merged = merge_characters(groups)
+    if not merged:  # 全部失败兜底离线
+        merged = await asyncio.to_thread(_extract_characters_offline, full_text)
+    return merged
 
 
 def _char_hint(characters: List[Character]) -> str:
     return "；".join(f"{c.name}({c.description})" for c in characters) or "（无）"
 
 
-async def _chapter_agent(client, model, idx, title, body, characters, ledger, offline,
-                         hint: str = "") -> List[Scene]:
-    agent = f"分场Agent·{title[:8]}"
-    ledger.start(agent, "本章 → 结构化场次")
-    t0 = perf_counter()
-    if offline:
-        scenes = await asyncio.to_thread(_convert_chapter_offline, body, characters)
-        ledger.offline(agent, (perf_counter() - t0) * 1000)
-        return scenes
+# ---- 单 agent 内部的「自检 → 改写」反思循环（亮点：每章产出前先自我审稿）----
+MAX_REFLECT = 1            # 反思轮数（1 = 自检一次，有问题则改写一次）
+REFLECT_MAX_JSON = 20000  # 剧本 JSON 超过此长度则跳过反思（防止截断丢内容/烧钱）
+
+
+class _SelfReview(BaseModel):
+    ok: bool = Field(description="是否已达标、无需修改")
+    issues: List[str] = Field(default_factory=list, description="发现的问题清单，具体到第几场/哪句；达标则为空")
+
+
+_REVIEW_CHECKLIST = (
+    "你是挑剔的剧本审稿人。对照改编铁律逐条检查这份本章剧本，只报真实问题：\n"
+    "1. 心理描写是否都转成了 voiceover（不能残留在 action 里当叙述）？\n"
+    "2. 每句 dialogue/voiceover 是否都标了正确 character（必须在人物表内）？\n"
+    "3. elements 顺序是否还原了原文叙事节奏？是否臆造了原文没有的情节？\n"
+    "4. heading.day_night / beat / breakdown 等专业字段是否合理？\n"
+    "达标则 ok=true、issues=[]；否则 ok=false 并具体列出问题。"
+)
+
+
+async def _self_review(client, model, title, body, cur, characters, ledger) -> _SelfReview:
+    """cur = 待审剧本完整 JSON 字符串（由调用方传入，已确保体量可控、不截断）。"""
+    agent = f"自检Agent·{title[:8]}"
+    ledger.start(agent, "审查本章剧本质量")
     char_ctx = _char_hint(characters)
-    # 静态前缀（RULES + 人物表）放 system → 跨章 prompt 缓存命中
-    system_text = (f"{RULES}\n\n已知人物表（对白/旁白的 character 必须用这些名字）：{char_ctx}")
-    user_text = ("请把下面这一章小说转换为结构化剧本：按时间/地点切分为若干场，"
-                 "每场给出 heading（含 day_night）、synopsis、beat、breakdown 与有序 elements。\n")
-    if hint:
-        user_text += f"\n【上一轮校验发现的问题，请务必修正】：{hint}\n"
-    user_text += f"\n本章正文：\n{body}"
+    prompt = (f"{_REVIEW_CHECKLIST}\n\n已知人物表：{char_ctx}\n\n"
+              f"【本章原文】\n{body[:6000]}\n\n【待审剧本(JSON)】\n{cur}")
+    try:
+        rv = await _structured_async(
+            client, model, "你是严格的剧本审稿人，只挑真实问题。", prompt,
+            _SelfReview, 1500, agent=agent, ledger=ledger, cache_payload="review||" + cur)
+        rv = rv or _SelfReview(ok=True, issues=[])
+    except Exception as e:
+        ledger.error(agent, str(e))
+        rv = _SelfReview(ok=True, issues=[])
+    ledger.verdict(agent, rv.ok or not rv.issues, len(rv.issues))
+    return rv
+
+
+async def _revise_scenes(client, model, title, body, characters, scenes, cur, issues, ledger) -> List[Scene]:
+    """cur = 上一稿完整 JSON（不截断，避免改写时丢掉后半场次）。"""
+    agent = f"改写Agent·{title[:8]}"
+    ledger.start(agent, f"按 {len(issues)} 条审稿意见改写")
+    char_ctx = _char_hint(characters)
+    system_text = f"{RULES}\n\n已知人物表（对白/旁白的 character 必须用这些名字）：{char_ctx}"
+    user_text = (
+        f"这是你上一稿的本章剧本(JSON，完整)：\n{cur}\n\n"
+        f"审稿意见（务必逐条修正，已正确的部分原样保留，不要删减场次）：\n- " + "\n- ".join(issues[:8]) +
+        f"\n\n请据此改进，输出完整的 SceneList。\n\n本章原文：\n{body}"
+    )
     try:
         sl = await _structured_async(
             client, model, system_text, user_text, SceneList, 16000,
-            agent=agent, ledger=ledger,
-            cache_payload=f"{char_ctx}||{hint}||{body}", use_cache=not hint)
-        return sl.scenes if sl else []
+            agent=agent, ledger=ledger, cache_payload=f"revise||{cur}||{'|'.join(issues)}")
+        # 防御：改写若意外吐出比原稿少很多的场次，宁可保留原稿（不丢内容）
+        if sl and sl.scenes and len(sl.scenes) >= max(1, len(scenes) - 1):
+            return sl.scenes
+        return scenes
     except Exception as e:
         ledger.error(agent, str(e))
-        return await asyncio.to_thread(_convert_chapter_offline, body, characters)
+        return scenes
+
+
+async def _convert_one(client, model, label, system_text, user_text, ledger, hint,
+                       cache_payload, characters, fallback_body) -> List[Scene]:
+    """单块转换 + 失败兜底离线。"""
+    ledger.start(label, "→ 结构化场次")
+    try:
+        sl = await _structured_async(
+            client, model, system_text, user_text, SceneList, 16000,
+            agent=label, ledger=ledger, cache_payload=cache_payload, use_cache=not hint)
+        return sl.scenes if sl else []
+    except Exception as e:
+        ledger.error(label, str(e))
+        return await asyncio.to_thread(_convert_chapter_offline, fallback_body, characters)
+
+
+async def _chapter_agent(client, model, fast_model, idx, title, body, characters, ledger,
+                         offline, hint: str = "", reflect: bool = False) -> List[Scene]:
+    agent = f"分场Agent·{title[:8]}"
+    if offline:
+        ledger.start(agent, "本章 → 结构化场次")
+        t0 = perf_counter()
+        scenes = await asyncio.to_thread(_convert_chapter_offline, body, characters)
+        ledger.offline(agent, (perf_counter() - t0) * 1000)
+        return scenes
+
+    char_ctx = _char_hint(characters)
+    system_text = (f"{RULES}\n\n已知人物表（对白/旁白的 character 必须用这些名字）：{char_ctx}")
+    base_user = ("请把下面这段小说正文转换为结构化剧本：按时间/地点切分为若干场，"
+                 "每场给出 heading（含 day_night）、synopsis、beat、breakdown 与有序 elements。\n")
+    if hint:
+        base_user += f"\n【上一轮校验发现的问题，请务必修正】：{hint}\n"
+
+    # 超长章节按段落切块顺序转换（章内串行，受外层 Semaphore 约束，不放大并发）
+    chunks = chunk_by_paragraph(body)
+    scenes: List[Scene] = []
+    for ci, chunk in enumerate(chunks, 1):
+        label = agent if len(chunks) == 1 else f"{agent}·块{ci}/{len(chunks)}"
+        user_text = base_user + f"\n正文：\n{chunk}"
+        part = await _convert_one(client, model, label, system_text, user_text, ledger,
+                                  hint, f"{char_ctx}||{hint}||{chunk}", characters, chunk)
+        scenes.extend(part)
+
+    # 单 agent 内部反思循环（自检 → 改写），按 JSON 体量门控，超大则跳过防丢内容
+    if reflect and scenes:
+        cur = json.dumps([s.model_dump() for s in scenes], ensure_ascii=False)
+        if len(cur) > REFLECT_MAX_JSON:
+            ledger.start(f"自检Agent·{title[:8]}", "本章较大，跳过自检（防截断丢内容）")
+        else:
+            for _ in range(MAX_REFLECT):
+                rv = await _self_review(client, fast_model, title, body, cur, characters, ledger)
+                if rv.ok or not rv.issues:
+                    break
+                scenes = await _revise_scenes(client, model, title, body, characters,
+                                              scenes, cur, rv.issues, ledger)
+                cur = json.dumps([s.model_dump() for s in scenes], ensure_ascii=False)
+    return scenes
 
 
 # =========================================================
@@ -287,29 +403,47 @@ def _offending_chapters(problems: List[str], scene_chapter: List[int]) -> List[i
 
 async def orchestrate(text: str, title: str = "未命名剧本", original_work: str = "",
                       author: str = "", use_ai: bool = True, model: Optional[str] = None,
-                      emit: EmitCb = None, concurrency: int = DEFAULT_CONCURRENCY) -> dict:
+                      emit: EmitCb = None, concurrency: int = DEFAULT_CONCURRENCY,
+                      reflect: bool = True) -> dict:
     wall0 = perf_counter()
     ledger = Ledger(emit)
     offline = _is_offline(use_ai)
     model = model or settings.script_model
+    fast_model = settings.fast_model or model  # 智能路由：量活用快模型
     chapters = split_chapters(text)
     client = None if offline else _aclient()
+    do_reflect = reflect and not offline  # 反思循环仅在线有意义
 
-    ledger.start("编排器", f"规划 {len(chapters)} 章 · {'离线' if offline else model}")
+    ledger.start("编排器", f"规划 {len(chapters)} 章 · {'离线' if offline else model}"
+                          + (f" · 量活路由 {fast_model.split('-')[1] if '-' in fast_model else fast_model}" if not offline else "")
+                          + ("· 自检反思:开" if do_reflect else ""))
 
-    # 1) 故事元信息 + 人物表（并发）
+    # 1) 故事元信息 + 人物表（并发；人物抽取走快模型）
     story, characters = await asyncio.gather(
         _story_agent(client, model, text, ledger, offline),
-        _character_agent(client, model, text, ledger, offline),
+        _character_agent(client, fast_model, text, ledger, offline),
     )
+    name_idx = _name_index(characters)
+    # 渐进式出稿：人物表先推给前端
+    if emit:
+        emit({"partial": True, "kind": "characters",
+              "characters": [_compact(c.model_dump()) for c in characters]})
 
-    # 2) 逐章并发转换（信号量限流）
+    # 2) 逐章并发转换（信号量限流）；每章转完即刻推给前端（边转边出）
     sem = asyncio.Semaphore(max(1, concurrency))
 
     async def run_chapter(idx, title_, body):
         async with sem:
-            scenes = await _chapter_agent(client, model, idx, title_, body, characters,
-                                          ledger, offline)
+            scenes = await _chapter_agent(client, model, fast_model, idx, title_, body,
+                                          characters, ledger, offline, reflect=do_reflect)
+        if emit:
+            enriched = []
+            for sc in scenes:
+                d = sc.model_dump()
+                _enrich_scene(d, title_, name_idx)
+                enriched.append(_compact(d))
+            emit({"partial": True, "kind": "chapter", "chapter_index": idx,
+                  "chapter_title": title_, "scenes": enriched})
         return idx, scenes
 
     pairs = await asyncio.gather(*[
@@ -328,7 +462,7 @@ async def orchestrate(text: str, title: str = "未命名剧本", original_work: 
         ledger.start("Critic", f"第{rounds}轮 · {len(problems)}个问题 · 重跑{len(bad)}章")
         hint = "；".join(problems[:6])
         fixes = await asyncio.gather(*[
-            _chapter_agent(client, model, idx, chapters[idx][0], chapters[idx][1],
+            _chapter_agent(client, model, fast_model, idx, chapters[idx][0], chapters[idx][1],
                            characters, ledger, offline, hint=hint)
             for idx in bad
         ])
