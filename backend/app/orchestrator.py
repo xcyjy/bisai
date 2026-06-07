@@ -109,7 +109,9 @@ class Ledger:
 
 def _aclient():
     import anthropic
-    kwargs = {"api_key": settings.anthropic_api_key}
+    # timeout 防止中转站慢响应让某个 Agent 无限挂起（多 Agent 卡死的根因）；
+    # max_retries 自动重试瞬时失败；用尽后由各 Agent 的 try/except 回落离线。
+    kwargs = {"api_key": settings.anthropic_api_key, "timeout": 120.0, "max_retries": 2}
     if settings.anthropic_base_url:
         kwargs["base_url"] = settings.anthropic_base_url
     return anthropic.AsyncAnthropic(**kwargs)
@@ -201,7 +203,9 @@ async def _character_agent(client, model, full_text, ledger, offline) -> List[Ch
         label = f"人物Agent·片段{i}"
         ledger.start(label, "抽取本片段人物")
         prompt = ("下面是一篇小说的片段。请抽取其中出现的主要人物，给出 name、"
-                  "一句话 description、别名 aliases、role（主角/反派/配角）、性别、人物弧光 arc。\n\n"
+                  "一句话 description、别名 aliases、role（主角/反派/配角）、性别、人物弧光 arc。\n"
+                  "⚠️ 只收真实人物。绝不要把年号/纪年（如“献帝二十年”里的“献帝”）、朝代、地名、"
+                  "官职或泛称（皇上/太子/王爷/娘娘/丞相/将军）当成人物；name 用本名，敬称放进 aliases。\n\n"
                   "小说片段：\n" + win)
         try:
             cl = await _structured_async(
