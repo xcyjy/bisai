@@ -125,6 +125,7 @@ class AgentConvertRequest(BaseModel):
 
 # ---- 成本/滥用防护：输入上限 + 进程内按用户限流 ----
 MAX_TEXT_CHARS = 100_000          # 单次输入上限，防超长文本烧 token
+AGENT_RUN_COST = 2                # 多 Agent 编排为旗舰档：每次成功 AI 转换扣 2 积分（普通 AI 为 1）
 _RATE_MAX = 5                     # 每窗口最多次数
 _RATE_WINDOW = 60.0              # 限流窗口（秒）
 _rate_hits: Dict[int, List[float]] = {}
@@ -150,12 +151,12 @@ def _charge_agent_run(user_id: int, stats: dict) -> None:
         u = s.get(User, user_id)
         if u is None:
             return
-        u.credits = max(0, u.credits - 1)
+        u.credits = max(0, u.credits - AGENT_RUN_COST)
         s.add(u)
         s.add(UsageLog(
             user_id=user_id, project_id=None, engine=stats.get("engine", ""),
             in_tokens=in_t, out_tokens=out_t,
-            cost_usd=cost_usd(model, in_t, out_t), credits_spent=1,
+            cost_usd=cost_usd(model, in_t, out_t), credits_spent=AGENT_RUN_COST,
         ))
         s.commit()
 
@@ -183,8 +184,8 @@ async def convert_agents(
     if use_ai:
         if not settings.ai_available:
             raise HTTPException(status_code=400, detail="AI 引擎暂未开通（未配置密钥），请用离线模式。")
-        if current.credits < 1:
-            raise HTTPException(status_code=402, detail="积分不足，请升级会员或购买积分包。")
+        if current.credits < AGENT_RUN_COST:
+            raise HTTPException(status_code=402, detail=f"多 Agent 编排需 {AGENT_RUN_COST} 积分，余额不足，请升级会员或购买积分包。")
 
     uid = current.id
 
