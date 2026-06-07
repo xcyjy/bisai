@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     anthropic_base_url: str = ""
     # 默认用最强的 Opus；高频量产可改 claude-sonnet-4-6 / claude-haiku-4-5 省钱。
     script_model: str = "claude-opus-4-8"
+    # 「量活」专用快模型：人物抽取、自检等大量并行调用走它，快且省（智能模型路由）。
+    fast_model: str = "claude-haiku-4-5-20251001"
     # 强制离线（即使配了 key，调试时可关掉 AI）
     force_offline: bool = False
 

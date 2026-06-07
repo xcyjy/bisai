@@ -68,7 +68,7 @@ export const exportYaml = (screenplay) =>
 export const fetchModels = () => request('/api/models', { auth: false })
 
 // ---- 多 Agent 编排（SSE 流式）：实时回调每个 Agent 事件，结束回调 result ----
-export async function streamAgents(payload, { onEvent, onResult, onError } = {}) {
+export async function streamAgents(payload, { onEvent, onPartial, onResult, onError } = {}) {
   let resp
   try {
     const headers = { 'Content-Type': 'application/json' }
@@ -108,6 +108,7 @@ export async function streamAgents(payload, { onEvent, onResult, onError } = {})
       let obj
       try { obj = JSON.parse(data) } catch { continue }
       if (ev === 'agent') onEvent && onEvent(obj)
+      else if (ev === 'partial') onPartial && onPartial(obj)
       else if (ev === 'result') onResult && onResult(obj)
       else if (ev === 'error') onError && onError(new Error(obj.message || '转换失败'))
     }
