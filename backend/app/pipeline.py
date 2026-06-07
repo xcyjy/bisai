@@ -1,8 +1,8 @@
-"""转换流水线：把整篇小说装配成完整短剧剧本 dict。
+"""转换流水线：把整篇小说装配成完整剧本 dict。
 
-流程：分章 -> 故事元信息 + 全局人物抽取 -> 逐章转换 -> 专业字段装配 + 编号 -> 拆集 -> 校验。
-本工具定位为「小说 → 短剧」：转换完成后默认按口播时长自动拆集，
-每集自带钩子/扣子/时长，产出的 YAML 本身就是分集短剧结构。
+流程：分章 -> 故事元信息 + 全局人物抽取 -> 逐章转换 -> 专业字段装配 + 编号 -> [短剧:拆集] -> 校验。
+支持影视 / 短剧双路：默认产出通用影视剧本；当 script_type="short_drama" 时，
+转换后按口播时长自动拆集（每集带钩子/扣子/时长），产出分集短剧结构。
 支持 use_ai（AI 精修 vs 离线规则）与 progress 回调（用于异步任务进度）。
 
 「专业字段装配」在装配期对每一场确定性地补全可计算的产业化字段：
@@ -132,12 +132,17 @@ def convert_novel(
     author: str = "",
     use_ai: bool = False,
     progress: ProgressCb = None,
+    script_type: str = "film",
     target_minutes: float = 2.5,
 ) -> dict:
-    """返回完整短剧剧本 dict（含 meta / characters / scenes / episodes）+ 统计 + 校验结果。
+    """返回完整剧本 dict（含 meta / characters / scenes）+ 统计 + 校验结果。
 
+    支持影视 / 短剧双路：script_type（film | tv | short_drama）决定剧本类型。
+    当 script_type="short_drama" 时，转换后按口播时长自动拆集
+    （doc["episodes"]，每集带钩子/扣子/时长）；影视模式不自动拆集，
+    如需分集可调 /api/projects/{id}/episodes。
     progress(done, total)：每完成一章回调一次，便于异步任务上报进度。
-    target_minutes：单集目标时长（分钟），用于自动拆集。
+    target_minutes：短剧单集目标时长（分钟），用于自动拆集。
     stats 中含 token 用量（in_tokens/out_tokens），离线时为 0。
     """
     chapters = split_chapters(text)
@@ -172,7 +177,7 @@ def convert_novel(
         "title": title,
         "original_work": original_work,
         "author": author,
-        "script_type": "short_drama",
+        "script_type": script_type,
         "schema_version": "1.0",
         "language": "zh",
         "source_chapters": chapter_titles,
@@ -192,8 +197,9 @@ def convert_novel(
         "scenes": scenes_out,
     }
 
-    # 4) 自动拆集：短剧定位下，转换即产出分集结构（每集带钩子/扣子/时长）
-    doc["episodes"] = split_into_episodes(doc, target_minutes=target_minutes)
+    # 4) 短剧模式：转换即按口播时长自动拆集（每集带钩子/扣子/时长）；影视模式不拆。
+    if script_type == "short_drama":
+        doc["episodes"] = split_into_episodes(doc, target_minutes=target_minutes)
 
     problems = validate_screenplay(doc)
     est_total = sum(s.get("est_duration_sec", 0) for s in scenes_out)
@@ -202,7 +208,7 @@ def convert_novel(
         "chapters": len(chapters),
         "characters": len(characters),
         "scenes": len(scenes_out),
-        "episodes": len(doc["episodes"]),
+        "episodes": len(doc.get("episodes", [])),
         "dialogues": sum(
             1 for s in scenes_out for el in s["elements"] if el["type"] == "dialogue"
         ),

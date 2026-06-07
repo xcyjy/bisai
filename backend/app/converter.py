@@ -26,16 +26,15 @@ def _model() -> str:
     return settings.script_model
 
 # ---- 转换铁律（注入到 Prompt，也是离线规则的设计依据）----
-RULES = """你是一位专业短剧编剧，正在把小说改编成竖屏微短剧剧本初稿。严格遵守以下铁律：
+RULES = """你是一位专业编剧，正在把小说改编成剧本初稿。严格遵守以下铁律：
 1. Show, don't tell：剧本只能呈现“看得见的动作 + 听得到的声音”。
 2. 心理描写（他想/他明白/他没想到/内心独白）→ 转成 voiceover（画外音），归到对应角色，绝不能当作 action。
 3. 对白 → dialogue，必须标明 character（说话人）；“怎么说”的提示放进 parenthetical。
    若对白是电话另一头/画外/旁人听不到，用 extension 标注（INTO PHONE / O.S. / V.O.）。
-4. 环境/动作描写 → action；短剧节奏快，环境描写尽量精简，多留给对白与冲突。
+4. 环境/动作描写 → action。
 5. 时间或地点发生变化 → 切分为新的一场（scene）。
-6. 短剧特性：强冲突、强情绪、台词密度高、推进迅速；优先保留能制造反转与悬念的情节。
-7. 忠于原文：不要臆造原文没有的情节；可适当精简冗长的环境描写。
-8. elements 必须保持原文的先后顺序（顺序=叙事节奏）。
+6. 忠于原文：不要臆造原文没有的情节；可适当精简冗长的环境描写。
+7. elements 必须保持原文的先后顺序（顺序=叙事节奏）。
 
 【专业增强字段，尽力填写，无法判断就留空，绝不臆造】
 - heading.day_night：把 time 归一化为 DAY/NIGHT/DAWN/DUSK，供制片排期。
@@ -173,13 +172,13 @@ def _convert_chapter_online(
     prompt = (
         f"{RULES}\n\n"
         f"已知人物表（对白/旁白的 character 必须使用这些名字）：{char_hint}\n\n"
-        "请把下面这一章小说转换为结构化短剧剧本。按时间/地点切分为若干场，"
-        "每场给出 heading、synopsis 和有序的 elements；节奏要快、冲突要足。\n\n"
+        "请把下面这一章小说转换为结构化剧本。按时间/地点切分为若干场，"
+        "每场给出 heading、synopsis 和有序的 elements。\n\n"
         f"本章正文：\n{chapter_text}"
     )
     out = _structured(
         client,
-        system="你是专业短剧编剧，把小说改编成规范的竖屏微短剧剧本初稿。",
+        system="你是专业编剧，把小说改编成规范的剧本初稿。",
         prompt=prompt,
         output_model=SceneList,
         max_tokens=16000,
