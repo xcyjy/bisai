@@ -15,6 +15,9 @@ dist/
 out.yaml
 *.local
 
+# Agent 结果缓存（本地运行产物，含转换结果，不入库）
+.cache/
+
 # 数据库（本地 SQLite）
 *.db
 *.sqlite
