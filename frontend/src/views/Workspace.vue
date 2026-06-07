@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   createProject, getProject, saveScreenplay, sampleNovel, health, getJob, makeEpisodes,
+  exportYaml as apiExportYaml, fetchModels, streamAgents,
 } from '../api.js'
 import { useAuthStore } from '../stores/auth.js'
 
@@ -28,11 +29,34 @@ const projectId = ref(route.params.id ? Number(route.params.id) : null)
 const novelText = ref('')
 const title = ref('未命名剧本')
 const author = ref('')
-const engineChoice = ref('offline')   // offline | ai
+const engineChoice = ref('offline')   // offline | ai | agents
 const loading = ref(false)
 const saving = ref(false)
 const errorMsg = ref('')
 const engine = ref('')
+
+// 模型下拉（多 Agent / AI 用）
+const models = ref([])
+const modelsAvailable = ref(false)
+const model = ref('')
+
+// 多 Agent 实时活动流
+const agentEvents = ref([])
+const agentStats = ref(null)
+const AGENT_ICON = { start: '▶', done: '✓', cache: '⚡', error: '⚠' }
+function agentIcon(s) { return AGENT_ICON[s] || '·' }
+const afTokens = computed(() => {
+  const t = agentStats.value?.tokens
+  return t ? (t.in + t.out) : 0
+})
+const afHitRate = computed(() => {
+  const c = agentStats.value?.cache
+  return c ? Math.round((c.hit_rate || 0) * 100) : 0
+})
+const afWall = computed(() => {
+  const ms = agentStats.value?.timing?.wall_ms
+  return ms == null ? '' : (ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms')
+})
 
 const screenplay = ref(null)
 const stats = ref(null)
@@ -41,6 +65,12 @@ const editing = ref(null)
 const savedFlash = ref(0)
 const showScript = ref(false)
 const copied = ref(false)
+
+// YAML 导出（结构化交付物）
+const showYaml = ref(false)
+const yamlText = ref('')
+const yamlBusy = ref(false)
+const yamlCopied = ref(false)
 
 // 异步转换任务
 const converting = ref(false)
@@ -62,6 +92,12 @@ const epSummary = computed(() => {
 
 onMounted(async () => {
   try { engine.value = (await health()).engine } catch { engine.value = '后端未连接' }
+  try {
+    const m = await fetchModels()
+    models.value = m.models || []
+    modelsAvailable.value = m.available
+    if (models.value.length) model.value = models.value[0].id
+  } catch { /* 模型列表拉取失败不影响离线 */ }
   if (projectId.value) await loadProject(projectId.value)
 })
 onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
@@ -118,6 +154,7 @@ async function doConvert() {
     errorMsg.value = '请先粘贴或载入小说文本（建议 ≥3 章）。'
     return
   }
+  if (engineChoice.value === 'agents') return doAgentConvert()
   loading.value = true
   try {
     const res = await createProject({
@@ -157,6 +194,36 @@ function startPoll(jobId) {
     }
   }
   tick()
+}
+
+// 多 Agent 编排：SSE 实时活动流（不落库，专注「看得见的编排 + 缓存/token」）
+async function doAgentConvert() {
+  agentEvents.value = []
+  agentStats.value = null
+  screenplay.value = null
+  stats.value = null
+  errorMsg.value = ''
+  converting.value = true
+  job.value = null
+  await streamAgents(
+    {
+      text: novelText.value,
+      title: title.value,
+      author: author.value,
+      engine: modelsAvailable.value ? 'agents' : 'offline',
+      model: model.value || undefined,
+    },
+    {
+      onEvent: (e) => { agentEvents.value = [...agentEvents.value, e] },
+      onResult: (r) => {
+        screenplay.value = r.screenplay
+        stats.value = r.stats
+        agentStats.value = r.stats
+        converting.value = false
+      },
+      onError: (err) => { errorMsg.value = err.message; converting.value = false },
+    },
+  )
 }
 
 const progressPct = computed(() => {
@@ -295,6 +362,46 @@ async function copyScript() {
     setTimeout(() => { copied.value = false }, 1800)
   } catch { errorMsg.value = '复制失败，请手动选择文本复制。' }
 }
+
+// ---- YAML（结构化交付物）：调用后端 /api/export，对当前/编辑后的剧本重新生成 + 校验 ----
+async function loadYaml() {
+  if (!screenplay.value) return ''
+  yamlBusy.value = true
+  errorMsg.value = ''
+  try {
+    const res = await apiExportYaml(screenplay.value)
+    yamlText.value = res.yaml || ''
+    if (stats.value) stats.value = { ...stats.value, valid: res.valid, problems: res.problems }
+    return yamlText.value
+  } catch (e) {
+    errorMsg.value = e.message
+    return ''
+  } finally {
+    yamlBusy.value = false
+  }
+}
+async function toggleYaml() {
+  showYaml.value = !showYaml.value
+  if (showYaml.value) await loadYaml()   // 每次打开都取最新（含编辑）
+}
+async function exportYamlFile() {
+  const y = await loadYaml()
+  if (!y) return
+  const blob = new Blob([y], { type: 'text/yaml;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = `${title.value || '剧本'}.yaml`; a.click()
+  URL.revokeObjectURL(url)
+}
+async function copyYaml() {
+  const y = yamlText.value || (await loadYaml())
+  if (!y) return
+  try {
+    await navigator.clipboard.writeText(y)
+    yamlCopied.value = true
+    setTimeout(() => { yamlCopied.value = false }, 1800)
+  } catch { errorMsg.value = '复制失败，请手动选择文本复制。' }
+}
 </script>
 
 <template>
@@ -327,7 +434,27 @@ async function copyScript() {
             <router-link v-if="!canUseAI" to="/pricing" class="ep-up">积分不足，去升级 →</router-link>
           </div>
         </label>
+        <label class="ep-opt ep-wide" :class="{ on: engineChoice === 'agents' }">
+          <input type="radio" value="agents" v-model="engineChoice" />
+          <div>
+            <div class="ep-title">⚡ 多 Agent 编排 <span class="ep-new">实时 · 并发 · 缓存</span></div>
+            <div class="ep-desc">多 Agent 并发转换，实时看活动流；命中缓存 0 token，附 token 账本</div>
+          </div>
+        </label>
       </div>
+
+      <!-- 模型选择（多 Agent / AI 用）-->
+      <div v-if="engineChoice === 'agents' && modelsAvailable" class="model-pick">
+        <span class="mp-label">模型</span>
+        <select v-model="model" class="mp-select">
+          <option v-for="m in models" :key="m.id" :value="m.id">
+            {{ m.label }} · {{ m.tier }}（{{ m.desc }}）
+          </option>
+        </select>
+      </div>
+      <p v-else-if="engineChoice === 'agents' && !modelsAvailable" class="model-note">
+        未配置 AI 入口，多 Agent 将以离线引擎运行（0 token，演示编排与缓存）。
+      </p>
 
       <p v-if="errorMsg" class="error">{{ errorMsg }}</p>
       <div class="new-actions">
@@ -338,14 +465,40 @@ async function copyScript() {
       </div>
     </section>
 
-    <!-- 转换中：进度 -->
-    <section v-if="converting" class="convert-card card">
+    <!-- 转换中：进度（离线/AI 后台任务）-->
+    <section v-if="converting && engineChoice !== 'agents'" class="convert-card card">
       <div class="spinner"></div>
       <h3>正在转换…</h3>
       <p class="cv-sub" v-if="job && job.total">已完成 {{ job.progress }} / {{ job.total }} 章</p>
       <p class="cv-sub" v-else>正在解析章节…</p>
       <div class="bar"><div class="bar-fill" :style="{ width: progressPct + '%' }"></div></div>
       <p class="cv-tip">{{ engineChoice === 'ai' ? 'AI 精修中，长篇可能需要一会儿' : '离线快速转换中' }}</p>
+    </section>
+
+    <!-- 多 Agent 实时活动流 -->
+    <section v-if="agentEvents.length" class="agent-flow card">
+      <div class="af-head">
+        <h3>⚡ Agent 活动流 <span v-if="converting" class="af-live">● 实时</span></h3>
+        <div v-if="agentStats" class="af-sum">
+          <span>总 token <b>{{ afTokens }}</b></span>
+          <span>缓存命中 <b>{{ afHitRate }}%</b></span>
+          <span v-if="agentStats.tokens.cache_read">prompt缓存 <b>{{ agentStats.tokens.cache_read }}</b></span>
+          <span>耗时 <b>{{ afWall }}</b></span>
+          <span>Critic <b>{{ agentStats.rounds }}</b> 轮</span>
+          <span>校验 <b :class="{ bad: !agentStats.valid }">{{ agentStats.valid ? '通过 ✓' : '未通过' }}</b></span>
+        </div>
+      </div>
+      <ul class="af-list">
+        <li v-for="e in agentEvents" :key="e.seq" class="af-row" :class="'af-' + e.status">
+          <span class="af-ico">{{ agentIcon(e.status) }}</span>
+          <span class="af-agent">{{ e.agent }}</span>
+          <span class="af-note">{{ e.note || '' }}</span>
+          <span v-if="e.status === 'done' && (e.in || e.out)" class="af-tok">
+            in {{ e.in }} / out {{ e.out }}<template v-if="e.cache_read"> · ⚡read {{ e.cache_read }}</template>
+          </span>
+          <span v-if="e.ms != null" class="af-ms">{{ e.ms }}ms</span>
+        </li>
+      </ul>
     </section>
 
     <p v-if="loading && !converting" class="empty">加载中…</p>
@@ -373,7 +526,13 @@ async function copyScript() {
           <button class="ghost small" :class="{ on: showScript }" @click="showScript = !showScript">
             {{ showScript ? '关闭预览' : '预览全文' }}
           </button>
-          <button class="ghost small" @click="exportScript">导出剧本</button>
+          <button class="ghost small" @click="exportScript">导出台词本 .txt</button>
+          <button class="ghost small" :class="{ on: showYaml }" @click="toggleYaml">
+            {{ showYaml ? '关闭 YAML' : '查看 YAML' }}
+          </button>
+          <button class="primary small" :disabled="yamlBusy" @click="exportYamlFile">
+            {{ yamlBusy ? '生成中…' : '⬇ 导出 YAML' }}
+          </button>
           <button v-if="episodes.length" class="ghost small" :class="{ on: showEpisodes }"
                   @click="showEpisodes = !showEpisodes">🎬 剧集 ({{ episodes.length }})</button>
           <button class="primary" :disabled="saving" @click="doSave">
@@ -539,12 +698,30 @@ async function copyScript() {
         <div class="script-head">
           <h3>剧本全文（可直接复制）</h3>
           <button class="ghost small" @click="copyScript">{{ copied ? '已复制 ✓' : '复制全文' }}</button>
-          <button class="ghost small" @click="exportScript">导出 .txt</button>
+          <button class="ghost small" @click="exportScript">导出台词本 .txt</button>
         </div>
         <ul v-if="stats && stats.valid === false" class="problems">
           <li v-for="(p, i) in stats.problems" :key="i">⚠ {{ p }}</li>
         </ul>
         <pre class="script-paper">{{ buildScript() }}</pre>
+      </section>
+
+      <section v-if="showYaml" class="script-out card">
+        <div class="script-head">
+          <h3>剧本 YAML（结构化交付物 · Schema v1.0）</h3>
+          <span v-if="stats" class="yaml-valid" :class="{ bad: stats.valid === false }">
+            {{ stats.valid === false ? '⚠ 校验未通过' : '✓ 校验通过' }}
+          </span>
+          <button class="ghost small" :disabled="yamlBusy" @click="copyYaml">
+            {{ yamlCopied ? '已复制 ✓' : '复制 YAML' }}
+          </button>
+          <button class="ghost small" :disabled="yamlBusy" @click="exportYamlFile">导出 .yaml</button>
+        </div>
+        <ul v-if="stats && stats.valid === false" class="problems">
+          <li v-for="(p, i) in stats.problems" :key="i">⚠ {{ p }}</li>
+        </ul>
+        <p v-if="yamlBusy" class="hint">生成中…</p>
+        <pre v-else class="script-paper">{{ yamlText }}</pre>
       </section>
     </template>
   </div>
@@ -569,7 +746,39 @@ async function copyScript() {
 .ep-cost { color: var(--brand); font-size: 12px; font-weight: 600; margin-left: 4px; }
 .ep-desc { font-size: 12px; color: var(--text-2); margin-top: 3px; }
 .ep-up { display: inline-block; margin-top: 6px; font-size: 12px; color: var(--brand); font-weight: 600; }
+.ep-wide { grid-column: 1 / -1; }
+.ep-new { color: var(--brand); font-size: 12px; font-weight: 600; margin-left: 4px; }
 @media (max-width: 640px) { .engine-pick { grid-template-columns: 1fr; } }
+
+/* 模型下拉 */
+.model-pick { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.mp-label { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.mp-select { flex: 1; padding: 8px 10px; border: 1.5px solid var(--border-strong); border-radius: var(--r-sm); background: #fff; font-size: 13px; }
+.model-note { margin-top: 10px; font-size: 12px; color: var(--text-2); }
+
+/* Agent 活动流 */
+.agent-flow { max-width: 860px; margin: 3vh auto; padding: 20px 22px; }
+.af-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.af-head h3 { margin: 0; font-size: 16px; flex: 1; }
+.af-live { color: var(--brand); font-size: 12px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+.af-sum { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--text-2); }
+.af-sum b { color: var(--text); }
+.af-sum b.bad { color: var(--bad); }
+.af-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 56vh; overflow: auto; }
+.af-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+.af-row:nth-child(odd) { background: rgba(0,0,0,.025); }
+.af-ico { width: 18px; text-align: center; }
+.af-agent { font-weight: 600; min-width: 150px; }
+.af-note { flex: 1; color: var(--text-2); font-size: 12px; }
+.af-tok { font-variant-numeric: tabular-nums; color: var(--text-2); font-size: 12px; }
+.af-ms { font-variant-numeric: tabular-nums; color: var(--text-3, #999); font-size: 12px; min-width: 56px; text-align: right; }
+.af-done .af-ico { color: var(--ok, #2e9e5b); }
+.af-cache { background: var(--brand-soft) !important; }
+.af-cache .af-ico { color: var(--brand); }
+.af-error .af-ico { color: var(--bad); }
+.af-error .af-note { color: var(--bad); }
+.af-start .af-ico { color: var(--brand); }
 
 /* 转换中 */
 .convert-card { max-width: 560px; margin: 8vh auto; padding: 36px; text-align: center; }
@@ -681,6 +890,8 @@ async function copyScript() {
 .script-out { margin-top: 18px; padding: 18px 20px; }
 .script-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .script-head h3 { flex: 1; margin: 0; font-size: 16px; }
+.yaml-valid { font-size: 13px; color: var(--ok, #2e9e5b); font-weight: 600; }
+.yaml-valid.bad { color: var(--bad); }
 .problems { color: var(--bad); font-size: 13px; }
 .script-paper {
   background: #fffdf8; color: var(--text); border: 1px solid var(--border);

@@ -18,6 +18,7 @@ from .schema import (
     Scene,
     SceneElement,
     SceneList,
+    StoryMeta,
 )
 
 
@@ -29,12 +30,37 @@ RULES = """你是一位专业短剧编剧，正在把小说改编成竖屏微短
 1. Show, don't tell：剧本只能呈现“看得见的动作 + 听得到的声音”。
 2. 心理描写（他想/他明白/他没想到/内心独白）→ 转成 voiceover（画外音），归到对应角色，绝不能当作 action。
 3. 对白 → dialogue，必须标明 character（说话人）；“怎么说”的提示放进 parenthetical。
+   若对白是电话另一头/画外/旁人听不到，用 extension 标注（INTO PHONE / O.S. / V.O.）。
 4. 环境/动作描写 → action；短剧节奏快，环境描写尽量精简，多留给对白与冲突。
 5. 时间或地点发生变化 → 切分为新的一场（scene）。
 6. 短剧特性：强冲突、强情绪、台词密度高、推进迅速；优先保留能制造反转与悬念的情节。
 7. 忠于原文：不要臆造原文没有的情节；可适当精简冗长的环境描写。
 8. elements 必须保持原文的先后顺序（顺序=叙事节奏）。
+
+【专业增强字段，尽力填写，无法判断就留空，绝不臆造】
+- heading.day_night：把 time 归一化为 DAY/NIGHT/DAWN/DUSK，供制片排期。
+- scene.beat：该场叙事节拍（setup/inciting_incident/turning_point/midpoint/climax/resolution）。
+- scene.breakdown：制片分解——props(关键道具)/wardrobe(服装)/vehicles(交通工具)/sfx(雨雪爆破等氛围特效)/extras(群演)。
+  （cast 由程序自动统计，你不必填。）
 """
+
+# 日/夜归一化提示词（离线与 AI 缺失时的确定性兜底）。先匹配更具体的，再匹配宽泛的。
+_DAY_NIGHT_CUES = [
+    ("DAWN", ["黎明", "拂晓", "破晓", "天刚亮", "凌晨"]),
+    ("DUSK", ["黄昏", "傍晚", "日暮", "暮色", "夕阳", "薄暮"]),
+    ("NIGHT", ["夜", "晚", "深夜", "午夜", "子夜", "星", "月"]),
+    ("DAY", ["清晨", "早晨", "上午", "中午", "正午", "下午", "白天", "晌午", "日间"]),
+]
+
+
+def derive_day_night(time_text: str) -> Optional[str]:
+    """把自由文本时间归一化为 DAY/NIGHT/DAWN/DUSK，无法判断返回 None。"""
+    if not time_text:
+        return None
+    for label, cues in _DAY_NIGHT_CUES:
+        if any(cue in time_text for cue in cues):
+            return label
+    return None
 
 # 心理活动 / 议论的提示词（离线规则用）
 _PSYCH_CUES = ["想", "心里", "心想", "觉得", "没想到", "明白", "意识到", "仿佛",
@@ -59,7 +85,10 @@ def _is_offline(use_ai: bool) -> bool:
 
 def _client():
     import anthropic
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    kwargs = {"api_key": settings.anthropic_api_key}
+    if settings.anthropic_base_url:
+        kwargs["base_url"] = settings.anthropic_base_url  # 兼容中转站
+    return anthropic.Anthropic(**kwargs)
 
 
 def _track(usage: Optional[dict], resp) -> None:
@@ -72,6 +101,34 @@ def _track(usage: Optional[dict], resp) -> None:
         usage["out_tokens"] = usage.get("out_tokens", 0) + getattr(u, "output_tokens", 0)
 
 
+def _structured(client, system: str, prompt: str, output_model, max_tokens: int,
+                usage: Optional[dict] = None):
+    """用 tool-use（函数调用）拿结构化输出，并用 pydantic 校验。
+
+    为什么不用 messages.parse(output_format=...)：那依赖 Anthropic 结构化输出 beta，
+    很多中转站不支持（会把 JSON 包在 ```代码块里返回导致解析失败）。tool-use 是 GA 能力，
+    中转站普遍支持，强制 tool_choice 后能稳定拿到干净 JSON。
+    """
+    tool = {
+        "name": "emit_result",
+        "description": f"输出结构化结果（{output_model.__name__}）",
+        "input_schema": output_model.model_json_schema(),
+    }
+    resp = client.messages.create(
+        model=_model(),
+        max_tokens=max_tokens,
+        system=system,
+        tools=[tool],
+        tool_choice={"type": "tool", "name": "emit_result"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    _track(usage, resp)
+    for block in resp.content:
+        if getattr(block, "type", None) == "tool_use":
+            return output_model.model_validate(block.input)
+    return None
+
+
 def _extract_characters_online(full_text: str, usage: Optional[dict] = None) -> List[Character]:
     client = _client()
     prompt = (
@@ -79,16 +136,33 @@ def _extract_characters_online(full_text: str, usage: Optional[dict] = None) -> 
         "为每个角色分配唯一 id（如 char_01），给出 name 和一句话 description。\n\n"
         f"小说全文：\n{full_text[:12000]}"
     )
-    resp = client.messages.parse(
-        model=_model(),
-        max_tokens=4000,
+    out = _structured(
+        client,
         system="你是专业编剧助手，擅长从小说中梳理人物。",
-        messages=[{"role": "user", "content": prompt}],
-        output_format=CharacterList,
+        prompt=prompt,
+        output_model=CharacterList,
+        max_tokens=4000,
+        usage=usage,
     )
-    _track(usage, resp)
-    out = resp.parsed_output
     return out.characters if out else []
+
+
+def _extract_story_meta_online(full_text: str, usage: Optional[dict] = None) -> StoryMeta:
+    client = _client()
+    prompt = (
+        "下面是一篇小说。请用一句话 logline（主角+核心困境+悬念）概括故事，"
+        "并判断其 genre（类型，如 都市/悬疑/言情/古装）与 tone（基调）。\n\n"
+        f"小说全文：\n{full_text[:12000]}"
+    )
+    out = _structured(
+        client,
+        system="你是资深剧本策划，擅长一句话提炼故事主线。",
+        prompt=prompt,
+        output_model=StoryMeta,
+        max_tokens=1000,
+        usage=usage,
+    )
+    return out or StoryMeta()
 
 
 def _convert_chapter_online(
@@ -103,15 +177,14 @@ def _convert_chapter_online(
         "每场给出 heading、synopsis 和有序的 elements；节奏要快、冲突要足。\n\n"
         f"本章正文：\n{chapter_text}"
     )
-    resp = client.messages.parse(
-        model=_model(),
-        max_tokens=16000,
+    out = _structured(
+        client,
         system="你是专业短剧编剧，把小说改编成规范的竖屏微短剧剧本初稿。",
-        messages=[{"role": "user", "content": prompt}],
-        output_format=SceneList,
+        prompt=prompt,
+        output_model=SceneList,
+        max_tokens=16000,
+        usage=usage,
     )
-    _track(usage, resp)
-    out = resp.parsed_output
     return out.scenes if out else []
 
 
@@ -196,7 +269,10 @@ def _convert_chapter_offline(chapter_text: str, characters: List[Character]) -> 
     def flush(time_lbl: str):
         if current_elements:
             scenes.append(Scene(
-                heading=Heading(int_ext="INT", location="待定地点", time=time_lbl),
+                heading=Heading(
+                    int_ext="INT", location="待定地点", time=time_lbl,
+                    day_night=derive_day_night(time_lbl),
+                ),
                 synopsis="（自动生成，建议人工补充梗概）",
                 elements=list(current_elements),
             ))
@@ -246,6 +322,18 @@ def extract_characters(
         return _extract_characters_online(full_text, usage)
     except Exception:
         return _extract_characters_offline(full_text)
+
+
+def extract_story_meta(
+    full_text: str, use_ai: bool = False, usage: Optional[dict] = None
+) -> StoryMeta:
+    """抽取故事级元信息（logline/genre/tone）。离线无法可靠生成，返回空。"""
+    if _is_offline(use_ai):
+        return StoryMeta()
+    try:
+        return _extract_story_meta_online(full_text, usage)
+    except Exception:
+        return StoryMeta()
 
 
 def convert_chapter(
