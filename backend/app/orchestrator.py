@@ -99,7 +99,9 @@ class Ledger:
 
 def _aclient():
     import anthropic
-    kwargs = {"api_key": settings.anthropic_api_key}
+    # timeout 防止中转站慢响应让某个 Agent 无限挂起（多 Agent 卡死的根因）；
+    # max_retries 自动重试瞬时失败；用尽后由各 Agent 的 try/except 回落离线。
+    kwargs = {"api_key": settings.anthropic_api_key, "timeout": 120.0, "max_retries": 2}
     if settings.anthropic_base_url:
         kwargs["base_url"] = settings.anthropic_base_url
     return anthropic.AsyncAnthropic(**kwargs)
@@ -183,7 +185,9 @@ async def _character_agent(client, model, full_text, ledger, offline) -> List[Ch
         return chars
     prompt = ("下面是一篇小说。请抽取主要人物，生成全局人物表。"
               "为每个角色分配唯一 id（如 char_01），给出 name、一句话 description、"
-              "别名 aliases、role（主角/反派/配角）、性别、人物弧光 arc。\n\n"
+              "别名 aliases、role（主角/反派/配角）、性别、人物弧光 arc。\n"
+              "⚠️ 只收真实人物。绝不要把年号/纪年（如“献帝二十年”里的“献帝”）、朝代、地名、"
+              "官职或泛称（皇上/太子/王爷/娘娘/丞相/将军）当成人物；name 用本名，敬称放进 aliases。\n\n"
               "小说全文：\n" + full_text[:12000])
     try:
         cl = await _structured_async(
