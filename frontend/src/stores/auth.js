@@ -26,7 +26,8 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       user.value = await api.fetchMe()
     } catch {
-      logout()
+      // 不要因网络抖动/后端重启就登出（否则用户被无故弹回登录）。
+      // 真正的 401 已由 api.request 的全局处理器清 token 并跳转登录，这里只需保留会话。
     }
   }
   // 购买 / 转换后刷新用户态（积分、会员）

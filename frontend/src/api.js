@@ -60,6 +60,58 @@ export const saveScreenplay = (id, screenplay) =>
 export const deleteProject = (id) =>
   request(`/api/projects/${id}`, { method: 'DELETE' })
 
+// ---- 导出 YAML（把当前/编辑后的剧本重新生成干净 YAML + 校验）----
+export const exportYaml = (screenplay) =>
+  request('/api/export', { method: 'POST', body: { screenplay }, auth: false })
+
+// ---- 可用模型（中转站 claude 系，分档）----
+export const fetchModels = () => request('/api/models', { auth: false })
+
+// ---- 多 Agent 编排（SSE 流式）：实时回调每个 Agent 事件，结束回调 result ----
+export async function streamAgents(payload, { onEvent, onResult, onError } = {}) {
+  let resp
+  try {
+    resp = await fetch('/api/convert/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch (e) {
+    onError && onError(new Error('无法连接后端'))
+    return
+  }
+  if (!resp.ok || !resp.body) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+    onError && onError(new Error(formatDetail(err.detail) || '请求失败'))
+    return
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let idx
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const chunk = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      let ev = 'message'
+      let data = ''
+      for (const ln of chunk.split('\n')) {
+        if (ln.startsWith('event:')) ev = ln.slice(6).trim()
+        else if (ln.startsWith('data:')) data += ln.slice(5).trim()
+      }
+      if (!data) continue
+      let obj
+      try { obj = JSON.parse(data) } catch { continue }
+      if (ev === 'agent') onEvent && onEvent(obj)
+      else if (ev === 'result') onResult && onResult(obj)
+      else if (ev === 'error') onError && onError(new Error(obj.message || '转换失败'))
+    }
+  }
+}
+
 // ---- 异步任务 ----
 export const getJob = (id) => request(`/api/jobs/${id}`)
 

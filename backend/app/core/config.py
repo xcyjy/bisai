@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # ---- 大模型（AI 精修引擎）----
     # 本地不配则 AI 引擎不可用，前端仍可用免费离线引擎；云上配置后自动启用。
     anthropic_api_key: str = ""
+    # 自定义 API 入口（兼容 Anthropic 协议的中转站）；留空则用官方 api.anthropic.com。
+    anthropic_base_url: str = ""
     # 默认用最强的 Opus；高频量产可改 claude-sonnet-4-6 / claude-haiku-4-5 省钱。
     script_model: str = "claude-opus-4-8"
     # 强制离线（即使配了 key，调试时可关掉 AI）
