@@ -17,6 +17,7 @@ from ..core.config import settings
 from ..core.deps import get_current_user
 from ..db.models import Job, Project, Screenplay, UsageLog, User
 from ..db.session import engine, get_session
+from ..episodes import episodes_summary, split_into_episodes
 from ..exporter import to_yaml
 from ..pipeline import convert_novel
 from ..schema import validate_screenplay
@@ -34,6 +35,10 @@ class CreateProjectRequest(BaseModel):
 
 class SaveScreenplayRequest(BaseModel):
     screenplay: Dict[str, Any]
+
+
+class EpisodeRequest(BaseModel):
+    target_minutes: float = 2.5
 
 
 def _own_project(project_id: int, user: User, session: Session) -> Project:
@@ -232,11 +237,39 @@ def get_project(
         "screenplay": doc,
         "yaml": to_yaml(doc) if doc else "",
         "version": sp.version if sp else 0,
+        "episodes": doc.get("episodes", []) if doc else [],
         "job": {
             "id": job.id, "status": job.status, "progress": job.progress,
             "total": job.total, "error": job.error,
         } if job else None,
     }
+
+
+@router.post("/{project_id}/episodes")
+def make_episodes(
+    project_id: int,
+    req: EpisodeRequest,
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """一键拆集：把剧本切成 N 集短剧（每集带钩子/扣子/时长/体检）。
+
+    规则引擎，离线即可用、免费。写入最新剧本版本的 doc.episodes。
+    """
+    proj = _own_project(project_id, current, session)
+    sp = _latest_screenplay(project_id, session)
+    if sp is None or not sp.doc.get("scenes"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请先完成剧本转换，再拆集。")
+
+    eps = split_into_episodes(sp.doc, target_minutes=req.target_minutes)
+    doc = dict(sp.doc)
+    doc["episodes"] = eps
+    sp.doc = doc  # 重新赋值触发 JSON 列更新
+    proj.updated_at = datetime.now(timezone.utc)
+    session.add(sp)
+    session.add(proj)
+    session.commit()
+    return {"episodes": eps, "summary": episodes_summary(eps)}
 
 
 @router.put("/{project_id}/screenplay")

@@ -63,6 +63,10 @@ export const deleteProject = (id) =>
 // ---- 异步任务 ----
 export const getJob = (id) => request(`/api/jobs/${id}`)
 
+// ---- 拆集（短剧产线核心） ----
+export const makeEpisodes = (id, targetMinutes = 2.5) =>
+  request(`/api/projects/${id}/episodes`, { method: 'POST', body: { target_minutes: targetMinutes } })
+
 // ---- 账户 / 计费 ----
 export const fetchStats = () => request('/api/me/stats')
 export const listPlans = () => request('/api/plans')

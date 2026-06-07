@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  createProject, getProject, saveScreenplay, sampleNovel, health, getJob,
+  createProject, getProject, saveScreenplay, sampleNovel, health, getJob, makeEpisodes,
 } from '../api.js'
 import { useAuthStore } from '../stores/auth.js'
 
@@ -46,6 +46,19 @@ const copied = ref(false)
 const converting = ref(false)
 const job = ref(null)             // { status, progress, total }
 let pollTimer = null
+
+// 拆集
+const showEpisodes = ref(false)
+const makingEp = ref(false)
+const targetMin = ref(2.5)
+const episodes = computed(() => screenplay.value?.episodes || [])
+const epSummary = computed(() => {
+  const eps = episodes.value
+  if (!eps.length) return null
+  const healthy = eps.filter((e) => !e.warnings?.length).length
+  const avg = Math.round(eps.reduce((s, e) => s + e.est_seconds, 0) / eps.length)
+  return { count: eps.length, healthy, avg }
+})
 
 onMounted(async () => {
   try { engine.value = (await health()).engine } catch { engine.value = '后端未连接' }
@@ -150,6 +163,59 @@ const progressPct = computed(() => {
   if (!job.value || !job.value.total) return 8
   return Math.max(8, Math.round((job.value.progress / job.value.total) * 100))
 })
+
+// 一键拆集
+async function doSplit() {
+  if (!projectId.value) return
+  makingEp.value = true
+  errorMsg.value = ''
+  try {
+    const res = await makeEpisodes(projectId.value, targetMin.value)
+    if (screenplay.value) screenplay.value.episodes = res.episodes
+    showEpisodes.value = true
+  } catch (e) {
+    errorMsg.value = e.message
+  } finally {
+    makingEp.value = false
+  }
+}
+
+function fmtDur(sec) {
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return m ? `${m}分${String(s).padStart(2, '0')}秒` : `${s}秒`
+}
+
+// 导出分集台词本（交付物）
+function exportEpisodes() {
+  const sp = screenplay.value
+  const byNo = {}
+  sp.scenes.forEach((s) => { byNo[s.scene_number] = s })
+  const out = [`${title.value || '剧本'} · 分集台词本`, '']
+  episodes.value.forEach((ep) => {
+    out.push(`【第${ep.episode_number}集】${ep.title}  （约 ${ep.duration_text}）`)
+    out.push(`钩子：${ep.hook || '（无）'}`)
+    ep.scene_numbers.forEach((n) => {
+      const s = byNo[n]
+      if (!s) return
+      const h = s.heading
+      out.push(`  ◇ ${[h.time, intExtCN(h.int_ext), h.location].filter(Boolean).join(' ')}`)
+      s.elements.forEach((el) => {
+        if (el.type === 'dialogue') out.push(`  ${el.character || ''}${el.parenthetical ? '（' + el.parenthetical + '）' : ''}：${el.text || ''}`)
+        else if (el.type === 'voiceover') out.push(`  ${el.character || ''}（画外音）：${el.text || ''}`)
+        else if (el.type === 'action') out.push(`  △ ${el.text || ''}`)
+        else out.push(`  ${el.text || ''}`)
+      })
+    })
+    out.push(`扣子：${ep.cliffhanger || '（无）'}`)
+    out.push('')
+  })
+  const blob = new Blob([out.join('\n')], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = `${title.value || '剧本'}-分集台词本.txt`; a.click()
+  URL.revokeObjectURL(url)
+}
 
 const originalParas = computed(() =>
   novelText.value.split(/\n+/).map((s) => s.trim()).filter(Boolean)
@@ -308,6 +374,8 @@ async function copyScript() {
             {{ showScript ? '关闭预览' : '预览全文' }}
           </button>
           <button class="ghost small" @click="exportScript">导出剧本</button>
+          <button v-if="episodes.length" class="ghost small" :class="{ on: showEpisodes }"
+                  @click="showEpisodes = !showEpisodes">🎬 剧集 ({{ episodes.length }})</button>
           <button class="primary" :disabled="saving" @click="doSave">
             {{ saving ? '保存中…' : '保存修改' }}
           </button>
@@ -315,6 +383,73 @@ async function copyScript() {
       </div>
 
       <p v-if="errorMsg" class="error" style="margin:10px 0;">{{ errorMsg }}</p>
+
+      <!-- 拆集 CTA（还没拆过） -->
+      <section v-if="!episodes.length" class="split-cta card">
+        <div class="sc-text">
+          <strong>🎬 拆成短剧集</strong>
+          <span>把整部剧本按节奏切成 2~3 分钟一集，自动生成钩子、扣子，并体检时长。</span>
+        </div>
+        <div class="sc-ctrl">
+          <label>每集目标
+            <select v-model.number="targetMin">
+              <option :value="2">2 分钟</option>
+              <option :value="2.5">2.5 分钟</option>
+              <option :value="3">3 分钟</option>
+            </select>
+          </label>
+          <button class="primary" :disabled="makingEp" @click="doSplit">
+            {{ makingEp ? '拆集中…' : '一键拆集' }}
+          </button>
+        </div>
+      </section>
+
+      <!-- 剧集面板 -->
+      <section v-if="episodes.length && showEpisodes" class="ep-panel card">
+        <div class="ep-head">
+          <h3>分集（{{ epSummary.count }} 集）</h3>
+          <span class="ep-sum">
+            <b class="ok">{{ epSummary.healthy }}</b> 集达标 ·
+            <b class="bad">{{ epSummary.count - epSummary.healthy }}</b> 集待优化 ·
+            平均 {{ fmtDur(epSummary.avg) }}
+          </span>
+          <span class="ep-actions">
+            <label class="re">每集
+              <select v-model.number="targetMin">
+                <option :value="2">2分</option><option :value="2.5">2.5分</option><option :value="3">3分</option>
+              </select>
+            </label>
+            <button class="ghost small" :disabled="makingEp" @click="doSplit">重新拆集</button>
+            <button class="ghost small" @click="exportEpisodes">导出分集台词本</button>
+          </span>
+        </div>
+
+        <div class="ep-grid">
+          <div v-for="(ep, i) in episodes" :key="i" class="ep-card" :class="{ warn: ep.warnings.length }">
+            <div class="ep-top">
+              <span class="ep-no">第{{ ep.episode_number }}集</span>
+              <span class="ep-dur" :class="{ bad: !ep.checks.within_duration }">⏱ {{ ep.duration_text }}</span>
+            </div>
+            <div class="ep-field">
+              <label>🪝 钩子（开场抓人）</label>
+              <textarea v-model="ep.hook" rows="2" placeholder="本集开场第一句，要抓人" />
+            </div>
+            <div class="ep-field">
+              <label>🪤 扣子（集尾留悬念）</label>
+              <textarea v-model="ep.cliffhanger" rows="2" placeholder="本集结尾，逼观众看下一集" />
+            </div>
+            <div class="ep-meta">涉及场次：{{ ep.scene_numbers.join('、') }}</div>
+            <div class="ep-checks">
+              <span :class="ep.checks.has_hook ? 'c-ok' : 'c-bad'">钩子</span>
+              <span :class="ep.checks.has_cliffhanger ? 'c-ok' : 'c-bad'">扣子</span>
+              <span :class="ep.checks.within_duration ? 'c-ok' : 'c-bad'">时长</span>
+              <span :class="ep.checks.has_interaction ? 'c-ok' : 'c-bad'">冲突</span>
+            </div>
+            <div v-if="ep.warnings.length" class="ep-warn">⚠ {{ ep.warnings.join('；') }}</div>
+          </div>
+        </div>
+        <p class="ep-tip">改完钩子/扣子记得点右上「保存修改」。导出台词本可直接发给导演/演员。</p>
+      </section>
 
       <div class="editor" :class="{ split: compare }">
         <div v-if="compare" class="orig card">
@@ -445,6 +580,41 @@ async function copyScript() {
 @keyframes spin { to { transform: rotate(360deg); } }
 .bar { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
 .bar-fill { height: 100%; background: linear-gradient(90deg, var(--brand), #e0894f); border-radius: 999px; transition: width .4s; }
+
+/* 拆集 CTA */
+.split-cta { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 20px; margin-bottom: 16px; flex-wrap: wrap; border-left: 4px solid var(--brand); }
+.split-cta .sc-text strong { font-size: 15px; }
+.split-cta .sc-text span { display: block; color: var(--text-2); font-size: 13px; margin-top: 4px; }
+.split-cta .sc-ctrl { display: flex; gap: 10px; align-items: center; }
+.split-cta select { padding: 6px 8px; }
+
+/* 剧集面板 */
+.ep-panel { padding: 18px 20px; margin-bottom: 16px; }
+.ep-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.ep-head h3 { margin: 0; font-size: 16px; }
+.ep-sum { font-size: 13px; color: var(--text-2); }
+.ep-sum .ok { color: var(--ok); } .ep-sum .bad { color: var(--bad); }
+.ep-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.ep-actions .re { font-size: 12px; color: var(--text-2); }
+.ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.ep-card { border: 1px solid var(--border); border-radius: var(--r); padding: 14px; background: var(--surface-2); }
+.ep-card.warn { border-color: #eecaca; }
+.ep-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.ep-no { font-weight: 700; color: var(--brand); }
+.ep-dur { font-size: 13px; color: var(--text-2); }
+.ep-dur.bad { color: var(--bad); font-weight: 600; }
+.ep-field { margin-bottom: 8px; }
+.ep-field label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 3px; }
+.ep-field textarea { width: 100%; min-height: 42px; font-size: 13px; background: var(--surface); }
+.ep-meta { font-size: 12px; color: var(--text-3); margin: 6px 0; }
+.ep-checks { display: flex; gap: 6px; flex-wrap: wrap; }
+.ep-checks span { font-size: 11px; padding: 2px 9px; border-radius: 999px; }
+.c-ok { color: var(--ok); background: #f0f8f0; }
+.c-ok::before { content: '✓ '; }
+.c-bad { color: var(--bad); background: #fcf0ef; }
+.c-bad::before { content: '✕ '; }
+.ep-warn { font-size: 12px; color: var(--bad); margin-top: 8px; }
+.ep-tip { font-size: 12px; color: var(--text-3); margin: 14px 0 0; }
 
 /* 工具栏 */
 .ws-bar { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 12px 16px; margin-bottom: 16px; flex-wrap: wrap; }
